@@ -215,18 +215,32 @@ class MainActivity : ComponentActivity() {
                 progressBar.progress = 0
 
                 val notionClient = NotionClient(config)
+                val today = LocalDate.now()
+                var createdCount = 0
+                var updatedCount = 0
+                var skippedCount = 0
                 dailySteps.forEachIndexed { index, daily ->
                     ensureActive()
                     statusText.text =
                         "同期中 ${index + 1}/${dailySteps.size}: ${daily.date} の歩数 ${daily.steps}"
-                    withContext(Dispatchers.IO) {
+                    val result = withContext(Dispatchers.IO) {
                         ensureActive()
-                        notionClient.upsertSteps(daily.date, daily.steps)
+                        notionClient.syncSteps(
+                            date = daily.date,
+                            steps = daily.steps,
+                            overwriteExisting = daily.date == today
+                        )
+                    }
+                    when (result) {
+                        SyncResult.CREATED -> createdCount++
+                        SyncResult.UPDATED -> updatedCount++
+                        SyncResult.SKIPPED -> skippedCount++
                     }
                     progressBar.progress = index + 1
                 }
 
-                statusText.text = "${dailySteps.size}日分の歩数データをNotionへ同期しました。"
+                statusText.text =
+                    "${dailySteps.size}日分を確認しました。作成: ${createdCount}、更新: ${updatedCount}、スキップ: ${skippedCount}"
             } catch (e: CancellationException) {
                 statusText.text = "同期を中断しました。"
             } catch (e: Exception) {
@@ -300,6 +314,12 @@ private data class DailySteps(
     val steps: Long
 )
 
+private enum class SyncResult {
+    CREATED,
+    UPDATED,
+    SKIPPED
+}
+
 private data class NotionConfig(
     val token: String,
     val dataSourceId: String,
@@ -314,12 +334,16 @@ private data class NotionConfig(
 }
 
 private class NotionClient(private val config: NotionConfig) {
-    fun upsertSteps(date: LocalDate, steps: Long) {
+    fun syncSteps(date: LocalDate, steps: Long, overwriteExisting: Boolean): SyncResult {
         val pageId = findPageForDate(date)
-        if (pageId == null) {
+        return if (pageId == null) {
             createPage(date, steps)
-        } else {
+            SyncResult.CREATED
+        } else if (overwriteExisting) {
             updatePage(pageId, date, steps)
+            SyncResult.UPDATED
+        } else {
+            SyncResult.SKIPPED
         }
     }
 
