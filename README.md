@@ -1,25 +1,31 @@
 # Step Notion Sync
 
-Android app for Pixel devices that reads daily step counts from Health Connect and syncs them to a Notion data source when the user taps the sync button.
+Android app for Pixel devices that reads health data from Health Connect and syncs it to Notion data sources when the user taps a sync button.
 
 ## Current scope
 
-- Reads up to the most recent year of daily step counts from Health Connect.
-- Syncs only when the `同期` button is tapped.
-- Shows sync progress and allows the user to interrupt the sync.
-- Stores Notion integration token, data source ID, and property names locally on the device.
-- Queries the Notion data source for each synced date.
-- Skips existing Notion pages except for today, which is overwritten with the latest step count.
-- Creates a new page when a synced date is missing.
+- Reads step counts, blood pressure records, and heart rate samples from Health Connect.
+- Excludes today's step data from sync because it may still change.
+- Shows pending unsynced counts for step data and blood pressure data on the top page.
+- Syncs only when the user taps `歩数データを同期`, `血圧・心拍データを同期`, or `すべて同期`.
+- Stores Notion integration token, data source IDs, and property names locally on the device.
+- Uses the latest 30 days of Health Connect data as the sync window.
 
 ## Notion data source requirements
 
-The target Notion data source must have:
+The step data source must have:
 
 - A date property, default name: `Date`
 - A number property, default name: `Steps`
 
-The parent database must be shared with the Notion integration. Use the data source ID, not the database ID.
+The blood pressure data source must have:
+
+- A date property, default name: `Measured At`
+- A number property, default name: `Systolic`
+- A number property, default name: `Diastolic`
+- A number property, default name: `Heart Rate`
+
+The parent databases must be shared with the Notion integration. Use data source IDs, not database IDs.
 
 ## Build
 

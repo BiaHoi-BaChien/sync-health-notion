@@ -14,7 +14,7 @@ class PermissionsRationaleActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setPadding(padding, padding, padding, padding)
             addView(TextView(context).apply {
-                text = "Health Connectの歩数データを、同期ボタンを押した時だけNotionへ送信します。"
+                text = "Health Connectの歩数、血圧、心拍データを、同期ボタンを押した時だけNotionへ送信します。"
                 textSize = 18f
             })
         }

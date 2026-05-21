@@ -1,8 +1,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.health.READ_STEPS" />
-    <uses-permission android:name="android.permission.health.WRITE_BLOOD_PRESSURE" />
-    <uses-permission android:name="android.permission.health.WRITE_HEART_RATE" />
+    <uses-permission android:name="android.permission.health.READ_BLOOD_PRESSURE" />
+    <uses-permission android:name="android.permission.health.READ_HEART_RATE" />
 
     <queries>
         <package android:name="com.google.android.apps.healthdata" />
@@ -10,9 +10,7 @@
 
     <application
         android:allowBackup="true"
-        android:icon="@mipmap/ic_launcher"
-        android:label="Step Notion Sync"
-        android:roundIcon="@mipmap/ic_launcher_round"
+        android:label="Health Notion Sync"
         android:theme="@style/AppTheme">
         <activity
             android:name=".PermissionsRationaleActivity"
