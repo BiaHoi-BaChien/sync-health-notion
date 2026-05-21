@@ -10,6 +10,7 @@ import android.view.WindowInsets
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.activity.ComponentActivity
@@ -20,11 +21,17 @@ import androidx.health.connect.client.permission.HealthPermission
 import androidx.health.connect.client.records.BloodPressureRecord
 import androidx.health.connect.client.records.HeartRateRecord
 import androidx.health.connect.client.records.StepsRecord
+import androidx.health.connect.client.records.metadata.Metadata
 import androidx.health.connect.client.request.AggregateRequest
 import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
+import androidx.health.connect.client.units.Pressure
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -36,6 +43,7 @@ import java.net.URL
 import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
+import java.time.OffsetDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import kotlin.math.abs
@@ -47,6 +55,7 @@ class MainActivity : ComponentActivity() {
         HealthPermission.getReadPermission(HeartRateRecord::class)
     )
     private lateinit var permissionLauncher: ActivityResultLauncher<Set<String>>
+    private var pendingPermissionRequest: PermissionRequest? = null
     private lateinit var statusText: TextView
     private lateinit var stepPendingText: TextView
     private lateinit var vitalsPendingText: TextView
@@ -127,6 +136,7 @@ class MainActivity : ComponentActivity() {
     private fun showSettingsPage() {
         val density = resources.displayMetrics.density
         val padding = (20 * density).toInt()
+        val smallPadding = (8 * density).toInt()
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_VERTICAL
@@ -154,9 +164,52 @@ class MainActivity : ComponentActivity() {
         diastolicPropertyInput = root.addInput("最低血圧カラム名")
         heartRatePropertyInput = root.addInput("心拍カラム名")
 
-        root.addButton("設定を保存") {
+        val tabRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, smallPadding, 0, smallPadding)
+        }
+        stepTabButton = tabRow.addTabButton("歩数") { showTab(AppTab.STEPS) }
+        bloodPressureTabButton = tabRow.addTabButton("血圧") { showTab(AppTab.BLOOD_PRESSURE) }
+        root.addView(tabRow)
+
+        stepsContent = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        stepDataSourceInput = stepsContent.addInput("歩数 Notion Data Source ID")
+        stepDatePropertyInput = stepsContent.addInput("歩数 Date property name")
+        stepsPropertyInput = stepsContent.addInput("Steps property name")
+        stepsContent.addButton("歩数設定を保存") {
             saveSettings()
-            statusText.text = "設定を保存しました。"
+            statusText.text = "歩数設定を保存しました。"
+        }
+        stepsContent.addButton("歩数読み取り権限を許可") {
+            requestHealthPermissions(
+                PermissionRequest(
+                    permissions = stepPermissions,
+                    grantedMessage = "Health Connectの歩数読み取り権限が許可されました。",
+                    deniedMessage = "Health Connectの歩数読み取り権限が必要です。"
+                )
+            )
+        }
+        stepsContent.addButton("歩数をNotionへ同期") { syncStepsToNotion() }
+        root.addView(stepsContent)
+
+        bloodPressureContent = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        bloodPressureDataSourceInput = bloodPressureContent.addInput("血圧 Notion Data Source ID")
+        bloodPressureDatePropertyInput = bloodPressureContent.addInput("血圧 Date property name")
+        systolicPropertyInput = bloodPressureContent.addInput("最高血圧 property name")
+        diastolicPropertyInput = bloodPressureContent.addInput("最低血圧 property name")
+        heartRatePropertyInput = bloodPressureContent.addInput("心拍数 property name")
+        bloodPressureContent.addButton("血圧設定を保存") {
+            saveSettings()
+            statusText.text = "血圧設定を保存しました。"
+        }
+        bloodPressureContent.addButton("血圧/心拍書き込み権限を許可") {
+            requestHealthPermissions(
+                PermissionRequest(
+                    permissions = bloodPressurePermissions,
+                    grantedMessage = "Health Connectの血圧/心拍書き込み権限が許可されました。",
+                    deniedMessage = "Health Connectの血圧/心拍書き込み権限が必要です。"
+                )
+            )
         }
         root.addButton("TOPへ戻る") { showTopPage() }
 
@@ -244,11 +297,30 @@ class MainActivity : ComponentActivity() {
         return input
     }
 
-    private fun LinearLayout.addButton(label: String, onClick: () -> Unit) {
-        addView(Button(context).apply {
+    private fun LinearLayout.addButton(label: String, onClick: () -> Unit): Button {
+        val button = Button(context).apply {
             text = label
             setOnClickListener { onClick() }
-        })
+        }
+        addView(button)
+        return button
+    }
+
+    private fun LinearLayout.addTabButton(label: String, onClick: () -> Unit): Button {
+        val button = Button(context).apply {
+            text = label
+            setOnClickListener { onClick() }
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        addView(button)
+        return button
+    }
+
+    private fun showTab(tab: AppTab) {
+        stepsContent.visibility = if (tab == AppTab.STEPS) View.VISIBLE else View.GONE
+        bloodPressureContent.visibility = if (tab == AppTab.BLOOD_PRESSURE) View.VISIBLE else View.GONE
+        stepTabButton.isEnabled = tab != AppTab.STEPS
+        bloodPressureTabButton.isEnabled = tab != AppTab.BLOOD_PRESSURE
     }
 
     private fun loadSettings() {
@@ -306,7 +378,8 @@ class MainActivity : ComponentActivity() {
             if (granted.containsAll(requiredPermissions)) {
                 statusText.text = "Health Connectの権限は許可済みです。"
             } else {
-                permissionLauncher.launch(requiredPermissions)
+                pendingPermissionRequest = request
+                permissionLauncher.launch(request.permissions)
             }
         }
     }
@@ -407,7 +480,7 @@ class MainActivity : ComponentActivity() {
                 statusText.text = "歩数${result.first}件、血圧・心拍${result.second}件を同期しました。本日の歩数データは同期していません。"
                 refreshPendingCounts()
             } catch (e: Exception) {
-                statusText.text = "同期に失敗しました: ${e.message}"
+                statusText.text = "歩数同期に失敗しました: ${e.message}"
             }
         }
     }
@@ -486,8 +559,60 @@ class MainActivity : ComponentActivity() {
                 metrics = setOf(StepsRecord.COUNT_TOTAL),
                 timeRangeFilter = TimeRangeFilter.between(start, end)
             )
+            response.mapNotNullTo(dailySteps) { result ->
+                val steps = result.result[StepsRecord.COUNT_TOTAL] ?: 0L
+                if (steps <= 0L) {
+                    null
+                } else {
+                    DailySteps(result.startTime.toLocalDate(), steps)
+                }
+            }
+            chunkStart = chunkEnd
+        }
+        return dailySteps
+    }
+
+    private fun LocalDate.coerceAtMost(maximumValue: LocalDate): LocalDate {
+        return if (isAfter(maximumValue)) maximumValue else this
+    }
+
+    private companion object {
+        const val MAX_HEALTH_CONNECT_GROUPS_PER_REQUEST = 4_999L
+    }
+
+    private suspend fun writeBloodPressureEntries(
+        client: HealthConnectClient,
+        entries: List<BloodPressureEntry>
+    ): BloodPressureSyncResult {
+        val records = entries.flatMap { entry ->
+            val zoneOffset = ZoneId.systemDefault().rules.getOffset(entry.time)
+            val version = entry.lastEditedTime.toEpochMilli()
+            val bloodPressureRecord = BloodPressureRecord(
+                time = entry.time,
+                zoneOffset = zoneOffset,
+                metadata = Metadata.manualEntry("notion-bp-${entry.pageId}", version),
+                systolic = Pressure.millimetersOfMercury(entry.systolic),
+                diastolic = Pressure.millimetersOfMercury(entry.diastolic),
+                bodyPosition = BloodPressureRecord.BODY_POSITION_UNKNOWN,
+                measurementLocation = BloodPressureRecord.MEASUREMENT_LOCATION_UNKNOWN
+            )
+            val heartRateRecord = entry.heartRate?.let { heartRate ->
+                HeartRateRecord(
+                    startTime = entry.time,
+                    startZoneOffset = zoneOffset,
+                    endTime = entry.time.plusSeconds(1),
+                    endZoneOffset = zoneOffset,
+                    samples = listOf(HeartRateRecord.Sample(entry.time, heartRate)),
+                    metadata = Metadata.manualEntry("notion-hr-${entry.pageId}", version)
+                )
+            }
+            listOfNotNull(bloodPressureRecord, heartRateRecord)
+        }
+        client.insertRecords(records)
+        return BloodPressureSyncResult(
+            bloodPressureCount = entries.size,
+            heartRateCount = entries.count { it.heartRate != null }
         )
-        return response[StepsRecord.COUNT_TOTAL] ?: 0L
     }
 
     private suspend fun readVitalMeasurements(client: HealthConnectClient): List<VitalMeasurement> {
@@ -649,6 +774,26 @@ private class NotionClient(private val config: SyncConfig) {
         return response.optJSONArray("results")?.optJSONObject(0)?.optString("id")
     }
 
+    private fun parseBloodPressureEntry(
+        page: JSONObject,
+        config: BloodPressureNotionConfig
+    ): BloodPressureEntry? {
+        val properties = page.optJSONObject("properties") ?: return null
+        val systolic = properties.numberProperty(config.systolicProperty) ?: return null
+        val diastolic = properties.numberProperty(config.diastolicProperty) ?: return null
+        val time = properties.dateProperty(config.dateProperty)
+            ?: page.optString("created_time").takeIf { it.isNotBlank() }?.toInstantOrNull()
+            ?: return null
+        return BloodPressureEntry(
+            pageId = page.optString("id"),
+            lastEditedTime = page.optString("last_edited_time").toInstantOrNull() ?: Instant.now(),
+            time = time,
+            systolic = systolic,
+            diastolic = diastolic,
+            heartRate = properties.numberProperty(config.heartRateProperty)?.toLong()
+        )
+    }
+
     private fun request(method: String, endpoint: String, body: JSONObject): JSONObject {
         val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
             requestMethod = method
@@ -656,7 +801,7 @@ private class NotionClient(private val config: SyncConfig) {
             readTimeout = 30_000
             doInput = true
             doOutput = true
-            setRequestProperty("Authorization", "Bearer ${config.token}")
+            setRequestProperty("Authorization", "Bearer $token")
             setRequestProperty("Notion-Version", "2026-03-11")
             setRequestProperty("Content-Type", "application/json")
         }
