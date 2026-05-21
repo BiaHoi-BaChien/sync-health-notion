@@ -7,6 +7,7 @@ import android.view.ViewGroup
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.activity.ComponentActivity
@@ -15,10 +16,15 @@ import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.PermissionController
 import androidx.health.connect.client.permission.HealthPermission
 import androidx.health.connect.client.records.StepsRecord
-import androidx.health.connect.client.request.AggregateRequest
+import androidx.health.connect.client.request.AggregateGroupByPeriodRequest
 import androidx.health.connect.client.time.TimeRangeFilter
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -28,16 +34,23 @@ import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
 import java.time.LocalDate
-import java.time.ZoneId
+import java.time.Period
 
 class MainActivity : ComponentActivity() {
-    private val requiredPermissions = setOf(HealthPermission.getReadPermission(StepsRecord::class))
+    private val requiredPermissions = setOf(
+        HealthPermission.getReadPermission(StepsRecord::class),
+        HealthPermission.PERMISSION_READ_HEALTH_DATA_HISTORY
+    )
     private lateinit var permissionLauncher: ActivityResultLauncher<Set<String>>
     private lateinit var statusText: TextView
     private lateinit var tokenInput: EditText
     private lateinit var dataSourceInput: EditText
     private lateinit var datePropertyInput: EditText
     private lateinit var stepsPropertyInput: EditText
+    private lateinit var syncButton: Button
+    private lateinit var cancelButton: Button
+    private lateinit var progressBar: ProgressBar
+    private var syncJob: Job? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -77,7 +90,17 @@ class MainActivity : ComponentActivity() {
             statusText.text = "設定を保存しました。"
         }
         root.addButton("Health Connect権限を許可") { requestHealthPermission() }
-        root.addButton("同期") { syncStepsToNotion() }
+        syncButton = root.addButton("同期") { syncStepsToNotion() }
+        cancelButton = root.addButton("中断") { cancelSync() }.apply {
+            isEnabled = false
+        }
+
+        progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100
+            progress = 0
+            isIndeterminate = false
+        }
+        root.addView(progressBar)
 
         statusText = TextView(this).apply {
             text = "Notion設定を入力し、権限を許可してから同期してください。"
@@ -107,11 +130,13 @@ class MainActivity : ComponentActivity() {
         return input
     }
 
-    private fun LinearLayout.addButton(label: String, onClick: () -> Unit) {
-        addView(Button(context).apply {
+    private fun LinearLayout.addButton(label: String, onClick: () -> Unit): Button {
+        val button = Button(context).apply {
             text = label
             setOnClickListener { onClick() }
-        })
+        }
+        addView(button)
+        return button
     }
 
     private fun loadSettings() {
@@ -148,6 +173,11 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun syncStepsToNotion() {
+        if (syncJob?.isActive == true) {
+            statusText.text = "同期中です。中断する場合は「中断」を押してください。"
+            return
+        }
+
         saveSettings()
         val config = NotionConfig(
             token = tokenInput.text.toString().trim(),
@@ -160,8 +190,10 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        CoroutineScope(Dispatchers.Main).launch {
-            statusText.text = "同期中..."
+        syncJob = CoroutineScope(Dispatchers.Main).launch {
+            setSyncUi(isSyncing = true)
+            progressBar.isIndeterminate = true
+            statusText.text = "歩数データを取得中..."
             try {
                 val client = healthConnectClientOrNull()
                     ?: error("Health Connectが利用できません。")
@@ -172,15 +204,50 @@ class MainActivity : ComponentActivity() {
                     return@launch
                 }
 
-                val date = LocalDate.now()
-                val steps = readStepsForDate(client, date)
-                withContext(Dispatchers.IO) {
-                    NotionClient(config).upsertSteps(date, steps)
+                val dailySteps = readAllDailySteps(client)
+                if (dailySteps.isEmpty()) {
+                    statusText.text = "同期対象の歩数データがありません。"
+                    return@launch
                 }
-                statusText.text = "${date} の歩数 ${steps} をNotionへ同期しました。"
+
+                progressBar.isIndeterminate = false
+                progressBar.max = dailySteps.size
+                progressBar.progress = 0
+
+                val notionClient = NotionClient(config)
+                dailySteps.forEachIndexed { index, daily ->
+                    ensureActive()
+                    statusText.text =
+                        "同期中 ${index + 1}/${dailySteps.size}: ${daily.date} の歩数 ${daily.steps}"
+                    withContext(Dispatchers.IO) {
+                        ensureActive()
+                        notionClient.upsertSteps(daily.date, daily.steps)
+                    }
+                    progressBar.progress = index + 1
+                }
+
+                statusText.text = "${dailySteps.size}日分の歩数データをNotionへ同期しました。"
+            } catch (e: CancellationException) {
+                statusText.text = "同期を中断しました。"
             } catch (e: Exception) {
                 statusText.text = "同期に失敗しました: ${e.message}"
+            } finally {
+                setSyncUi(isSyncing = false)
             }
+        }
+    }
+
+    private fun cancelSync() {
+        syncJob?.cancel()
+        statusText.text = "同期を中断しています..."
+    }
+
+    private fun setSyncUi(isSyncing: Boolean) {
+        syncButton.isEnabled = !isSyncing
+        cancelButton.isEnabled = isSyncing
+        if (!isSyncing) {
+            progressBar.isIndeterminate = false
+            syncJob = null
         }
     }
 
@@ -191,19 +258,47 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private suspend fun readStepsForDate(client: HealthConnectClient, date: LocalDate): Long {
-        val zone = ZoneId.systemDefault()
-        val start = date.atStartOfDay(zone).toInstant()
-        val end = date.plusDays(1).atStartOfDay(zone).toInstant()
-        val response = client.aggregate(
-            AggregateRequest(
-                metrics = setOf(StepsRecord.COUNT_TOTAL),
-                timeRangeFilter = TimeRangeFilter.between(start, end)
+    private suspend fun readAllDailySteps(client: HealthConnectClient): List<DailySteps> {
+        val end = LocalDate.now().plusDays(1)
+        val start = end.minusYears(1)
+        val dailySteps = mutableListOf<DailySteps>()
+        var chunkStart = start
+        while (chunkStart.isBefore(end)) {
+            currentCoroutineContext().ensureActive()
+            val chunkEnd = chunkStart.plusDays(MAX_HEALTH_CONNECT_GROUPS_PER_REQUEST).coerceAtMost(end)
+            val response = client.aggregateGroupByPeriod(
+                AggregateGroupByPeriodRequest(
+                    metrics = setOf(StepsRecord.COUNT_TOTAL),
+                    timeRangeFilter = TimeRangeFilter.between(chunkStart.atStartOfDay(), chunkEnd.atStartOfDay()),
+                    timeRangeSlicer = Period.ofDays(1)
+                )
             )
-        )
-        return response[StepsRecord.COUNT_TOTAL] ?: 0L
+            response.mapNotNullTo(dailySteps) { result ->
+                val steps = result.result[StepsRecord.COUNT_TOTAL] ?: 0L
+                if (steps <= 0L) {
+                    null
+                } else {
+                    DailySteps(result.startTime.toLocalDate(), steps)
+                }
+            }
+            chunkStart = chunkEnd
+        }
+        return dailySteps
+    }
+
+    private fun LocalDate.coerceAtMost(maximumValue: LocalDate): LocalDate {
+        return if (isAfter(maximumValue)) maximumValue else this
+    }
+
+    private companion object {
+        const val MAX_HEALTH_CONNECT_GROUPS_PER_REQUEST = 4_999L
     }
 }
+
+private data class DailySteps(
+    val date: LocalDate,
+    val steps: Long
+)
 
 private data class NotionConfig(
     val token: String,
