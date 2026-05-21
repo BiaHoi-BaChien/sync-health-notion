@@ -85,8 +85,13 @@ class MainActivity : ComponentActivity() {
         val padding = (18 * density).toInt()
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_VERTICAL
             setPadding(padding, padding, padding, padding)
             setBackgroundColor(Color.parseColor("#101820"))
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
         }
 
         val header = LinearLayout(this).apply {
@@ -136,7 +141,7 @@ class MainActivity : ComponentActivity() {
         }
         root.addView(statusText)
 
-        setContentView(ScrollView(this).apply { addView(root) })
+        setContentView(centeredScrollContent(root, padding))
         refreshLatestDates()
     }
 
@@ -145,8 +150,13 @@ class MainActivity : ComponentActivity() {
         val padding = (18 * density).toInt()
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_VERTICAL
             setPadding(padding, padding, padding, padding)
             setBackgroundColor(Color.parseColor("#101820"))
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
         }
 
         root.addView(TextView(this).apply {
@@ -182,8 +192,26 @@ class MainActivity : ComponentActivity() {
         }
         root.addView(statusText)
 
-        setContentView(ScrollView(this).apply { addView(root) })
+        setContentView(centeredScrollContent(root, padding))
         loadSettings()
+    }
+
+    private fun centeredScrollContent(root: LinearLayout, basePadding: Int): ScrollView {
+        return ScrollView(this).apply {
+            isFillViewport = true
+            setBackgroundColor(Color.parseColor("#101820"))
+            addView(root)
+            setOnApplyWindowInsetsListener { _, insets ->
+                @Suppress("DEPRECATION")
+                root.setPadding(
+                    basePadding + insets.systemWindowInsetLeft,
+                    basePadding + insets.systemWindowInsetTop,
+                    basePadding + insets.systemWindowInsetRight,
+                    basePadding + insets.systemWindowInsetBottom
+                )
+                insets
+            }
+        }
     }
 
     private fun LinearLayout.addSummaryCard(title: String): LinearLayout {
