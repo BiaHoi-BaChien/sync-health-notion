@@ -8,6 +8,7 @@ import android.view.ViewGroup
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.activity.ComponentActivity
@@ -24,6 +25,10 @@ import androidx.health.connect.client.time.TimeRangeFilter
 import androidx.health.connect.client.units.Pressure
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -172,11 +177,13 @@ class MainActivity : ComponentActivity() {
         return input
     }
 
-    private fun LinearLayout.addButton(label: String, onClick: () -> Unit) {
-        addView(Button(context).apply {
+    private fun LinearLayout.addButton(label: String, onClick: () -> Unit): Button {
+        val button = Button(context).apply {
             text = label
             setOnClickListener { onClick() }
-        })
+        }
+        addView(button)
+        return button
     }
 
     private fun LinearLayout.addTabButton(label: String, onClick: () -> Unit): Button {
@@ -241,6 +248,11 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun syncStepsToNotion() {
+        if (syncJob?.isActive == true) {
+            statusText.text = "同期中です。中断する場合は「中断」を押してください。"
+            return
+        }
+
         saveSettings()
         val config = StepNotionConfig(
             token = tokenInput.text.toString().trim(),
@@ -275,7 +287,11 @@ class MainActivity : ComponentActivity() {
                 withContext(Dispatchers.IO) {
                     NotionClient(config.token).upsertSteps(config, date, steps)
                 }
-                statusText.text = "${date} の歩数 ${steps} をNotionへ同期しました。"
+
+                statusText.text =
+                    "${dailySteps.size}日分を確認しました。作成: ${createdCount}、更新: ${updatedCount}、スキップ: ${skippedCount}"
+            } catch (e: CancellationException) {
+                statusText.text = "同期を中断しました。"
             } catch (e: Exception) {
                 statusText.text = "歩数同期に失敗しました: ${e.message}"
             }
@@ -329,6 +345,20 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun cancelSync() {
+        syncJob?.cancel()
+        statusText.text = "同期を中断しています..."
+    }
+
+    private fun setSyncUi(isSyncing: Boolean) {
+        syncButton.isEnabled = !isSyncing
+        cancelButton.isEnabled = isSyncing
+        if (!isSyncing) {
+            progressBar.isIndeterminate = false
+            syncJob = null
+        }
+    }
+
     private fun healthConnectClientOrNull(): HealthConnectClient? {
         return when (HealthConnectClient.getSdkStatus(this)) {
             HealthConnectClient.SDK_AVAILABLE -> HealthConnectClient.getOrCreate(this)
@@ -336,17 +366,40 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private suspend fun readStepsForDate(client: HealthConnectClient, date: LocalDate): Long {
-        val zone = ZoneId.systemDefault()
-        val start = date.atStartOfDay(zone).toInstant()
-        val end = date.plusDays(1).atStartOfDay(zone).toInstant()
-        val response = client.aggregate(
-            AggregateRequest(
-                metrics = setOf(StepsRecord.COUNT_TOTAL),
-                timeRangeFilter = TimeRangeFilter.between(start, end)
+    private suspend fun readAllDailySteps(client: HealthConnectClient): List<DailySteps> {
+        val end = LocalDate.now().plusDays(1)
+        val start = end.minusYears(1)
+        val dailySteps = mutableListOf<DailySteps>()
+        var chunkStart = start
+        while (chunkStart.isBefore(end)) {
+            currentCoroutineContext().ensureActive()
+            val chunkEnd = chunkStart.plusDays(MAX_HEALTH_CONNECT_GROUPS_PER_REQUEST).coerceAtMost(end)
+            val response = client.aggregateGroupByPeriod(
+                AggregateGroupByPeriodRequest(
+                    metrics = setOf(StepsRecord.COUNT_TOTAL),
+                    timeRangeFilter = TimeRangeFilter.between(chunkStart.atStartOfDay(), chunkEnd.atStartOfDay()),
+                    timeRangeSlicer = Period.ofDays(1)
+                )
             )
-        )
-        return response[StepsRecord.COUNT_TOTAL] ?: 0L
+            response.mapNotNullTo(dailySteps) { result ->
+                val steps = result.result[StepsRecord.COUNT_TOTAL] ?: 0L
+                if (steps <= 0L) {
+                    null
+                } else {
+                    DailySteps(result.startTime.toLocalDate(), steps)
+                }
+            }
+            chunkStart = chunkEnd
+        }
+        return dailySteps
+    }
+
+    private fun LocalDate.coerceAtMost(maximumValue: LocalDate): LocalDate {
+        return if (isAfter(maximumValue)) maximumValue else this
+    }
+
+    private companion object {
+        const val MAX_HEALTH_CONNECT_GROUPS_PER_REQUEST = 4_999L
     }
 
     private suspend fun writeBloodPressureEntries(

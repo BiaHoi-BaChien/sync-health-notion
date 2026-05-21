@@ -4,11 +4,13 @@ Android app for Pixel devices that reads daily step counts from Health Connect a
 
 ## Current scope
 
-- Reads today's step count from Health Connect.
+- Reads up to the most recent year of daily step counts from Health Connect.
 - Syncs only when the `同期` button is tapped.
+- Shows sync progress and allows the user to interrupt the sync.
 - Stores Notion integration token, data source ID, and property names locally on the device.
-- Queries the Notion data source for today's page.
-- Updates the existing page when found, or creates a new page when missing.
+- Queries the Notion data source for each synced date.
+- Skips existing Notion pages except for today, which is overwritten with the latest step count.
+- Creates a new page when a synced date is missing.
 
 ## Notion data source requirements
 
