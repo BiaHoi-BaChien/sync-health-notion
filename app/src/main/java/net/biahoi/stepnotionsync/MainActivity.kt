@@ -329,7 +329,7 @@ class MainActivity : ComponentActivity() {
 
     private fun loadSettings() {
         val prefs = getSharedPreferences("notion", Context.MODE_PRIVATE)
-        tokenInput.setText(prefs.getString("token", ""))
+        tokenInput.setText(SecureSettingsStore.loadToken(prefs))
         stepsDataSourceInput.setText(
             prefs.getString("stepsDataSource", prefs.getString("dataSource", prefs.getString("database", "")))
         )
@@ -343,8 +343,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun saveSettings() {
-        getSharedPreferences("notion", Context.MODE_PRIVATE).edit()
-            .putString("token", tokenInput.text.toString().trim())
+        val prefs = getSharedPreferences("notion", Context.MODE_PRIVATE)
+        SecureSettingsStore.saveToken(prefs, tokenInput.text.toString().trim())
+        prefs.edit()
             .putString("stepsDataSource", stepsDataSourceInput.text.toString().trim())
             .putString("stepsDateProperty", stepsDatePropertyInput.text.toString().trim())
             .putString("stepsProperty", stepsPropertyInput.text.toString().trim())
@@ -359,7 +360,7 @@ class MainActivity : ComponentActivity() {
     private fun currentConfig(): SyncConfig {
         val prefs = getSharedPreferences("notion", Context.MODE_PRIVATE)
         return SyncConfig(
-            token = prefs.getString("token", "") ?: "",
+            token = SecureSettingsStore.loadToken(prefs),
             stepsDataSourceId = prefs.getString("stepsDataSource", prefs.getString("dataSource", "")) ?: "",
             stepsDateProperty = prefs.getString("stepsDateProperty", prefs.getString("dateProperty", "Date")) ?: "Date",
             stepsProperty = prefs.getString("stepsProperty", "Steps") ?: "Steps",
@@ -447,7 +448,7 @@ class MainActivity : ComponentActivity() {
                 statusText.text = "歩数データを${synced}件同期しました。本日の歩数データは同期していません。"
                 refreshLatestDates()
             } catch (e: Exception) {
-                statusText.text = "歩数データの同期に失敗しました: ${e.message}"
+                statusText.text = "歩数データの同期に失敗しました: ${safeErrorMessage(e)}"
             }
         }
     }
@@ -467,14 +468,40 @@ class MainActivity : ComponentActivity() {
                 statusText.text = "血圧・心拍データを${synced}件同期しました。"
                 refreshLatestDates()
             } catch (e: Exception) {
-                statusText.text = "血圧・心拍データの同期に失敗しました: ${e.message}"
+                statusText.text = "血圧・心拍データの同期に失敗しました: ${safeErrorMessage(e)}"
             }
         }
     }
 
     private fun syncAllToNotion() {
-        syncStepsToNotion()
-        syncVitalsToNotion()
+        val config = currentConfig()
+        if (!config.hasStepsSettings() || !config.hasVitalsSettings()) {
+            statusText.text = "歩数と血圧・心拍データのNotion設定を入力してください。"
+            return
+        }
+
+        CoroutineScope(Dispatchers.Main).launch {
+            statusText.text = "すべてのデータを同期中..."
+            try {
+                val client = checkedHealthClient() ?: return@launch
+                val result = withContext(Dispatchers.IO) {
+                    val steps = syncUnsyncedSteps(client, config)
+                    val vitals = syncUnsyncedVitals(client, config)
+                    steps to vitals
+                }
+                statusText.text = "歩数${result.first}件、血圧・心拍${result.second}件を同期しました。"
+                refreshLatestDates()
+            } catch (e: Exception) {
+                statusText.text = "同期に失敗しました: ${safeErrorMessage(e)}"
+            }
+        }
+    }
+
+    private fun safeErrorMessage(error: Exception): String {
+        return when (error) {
+            is NotionRequestException -> error.userMessage
+            else -> error.message?.takeIf { it.isNotBlank() } ?: "詳細不明のエラー"
+        }
     }
 
     private suspend fun checkedHealthClient(): HealthConnectClient? {
@@ -666,13 +693,13 @@ private data class VitalMeasurement(
 )
 
 private class NotionClient(private val config: SyncConfig) {
-    fun latestStepsDate(): LocalDate? = latestDate(config.stepsDataSourceId, config.stepsDateProperty)
+    fun latestStepsDate(): LocalDate? = latestDate(validDataSourceId(config.stepsDataSourceId), config.stepsDateProperty)
 
-    fun latestVitalsDate(): LocalDate? = latestDate(config.vitalsDataSourceId, config.vitalsMeasuredAtProperty)
+    fun latestVitalsDate(): LocalDate? = latestDate(validDataSourceId(config.vitalsDataSourceId), config.vitalsMeasuredAtProperty)
 
     fun hasStepPage(date: LocalDate): Boolean {
         return findPage(
-            dataSourceId = config.stepsDataSourceId,
+            dataSourceId = validDataSourceId(config.stepsDataSourceId),
             property = config.stepsDateProperty,
             dateValue = date.toString()
         ) != null
@@ -680,7 +707,7 @@ private class NotionClient(private val config: SyncConfig) {
 
     fun createStepPage(date: LocalDate, steps: Long) {
         val body = JSONObject()
-            .put("parent", dataSourceParent(config.stepsDataSourceId))
+            .put("parent", dataSourceParent(validDataSourceId(config.stepsDataSourceId)))
             .put(
                 "properties",
                 JSONObject()
@@ -692,7 +719,7 @@ private class NotionClient(private val config: SyncConfig) {
 
     fun hasVitalPage(measuredAt: Instant): Boolean {
         return findPage(
-            dataSourceId = config.vitalsDataSourceId,
+            dataSourceId = validDataSourceId(config.vitalsDataSourceId),
             property = config.vitalsMeasuredAtProperty,
             dateValue = measuredAt.toNotionDateTime()
         ) != null
@@ -711,7 +738,7 @@ private class NotionClient(private val config: SyncConfig) {
         }
 
         val body = JSONObject()
-            .put("parent", dataSourceParent(config.vitalsDataSourceId))
+            .put("parent", dataSourceParent(validDataSourceId(config.vitalsDataSourceId)))
             .put("properties", properties)
         request("POST", "https://api.notion.com/v1/pages", body)
     }
@@ -757,6 +784,14 @@ private class NotionClient(private val config: SyncConfig) {
             .put("data_source_id", dataSourceId)
     }
 
+    private fun validDataSourceId(dataSourceId: String): String {
+        val normalized = dataSourceId.trim()
+        require(DATA_SOURCE_ID_PATTERN.matches(normalized)) {
+            "Data Source IDの形式が正しくありません。NotionのData Source IDだけを入力してください。"
+        }
+        return normalized
+    }
+
     private fun request(method: String, endpoint: String, body: JSONObject): JSONObject {
         val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
             requestMethod = method
@@ -775,7 +810,7 @@ private class NotionClient(private val config: SyncConfig) {
         val text = BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).use { it.readText() }
         if (status !in 200..299) {
             val message = runCatching { JSONObject(text).optString("message") }.getOrNull()
-            error("Notion API ${status}: ${message ?: text}")
+            throw NotionRequestException(status, message)
         }
         return if (text.isBlank()) JSONObject() else JSONObject(text)
     }
@@ -783,3 +818,23 @@ private class NotionClient(private val config: SyncConfig) {
 
 private fun Instant.toNotionDateTime(): String =
     DateTimeFormatter.ISO_OFFSET_DATE_TIME.format(atZone(ZoneId.systemDefault()))
+
+private val DATA_SOURCE_ID_PATTERN = Regex("^[A-Za-z0-9-]{16,128}$")
+
+private class NotionRequestException(
+    status: Int,
+    private val notionMessage: String?
+) : RuntimeException("Notion API request failed with HTTP $status") {
+    val userMessage: String = buildString {
+        append("Notion APIのリクエストに失敗しました(HTTP ")
+        append(status)
+        append(")")
+        val publicMessage = notionMessage
+            ?.takeIf { it.isNotBlank() }
+            ?.take(120)
+        if (publicMessage != null) {
+            append(": ")
+            append(publicMessage)
+        }
+    }
+}
