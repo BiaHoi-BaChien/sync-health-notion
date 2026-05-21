@@ -9,7 +9,8 @@ Android app for Pixel devices that reads daily step counts from Health Connect a
 - Shows sync progress and allows the user to interrupt the sync.
 - Stores Notion integration token, data source ID, and property names locally on the device.
 - Queries the Notion data source for each synced date.
-- Updates the existing page when found, or creates a new page when missing.
+- Skips existing Notion pages except for today, which is overwritten with the latest step count.
+- Creates a new page when a synced date is missing.
 
 ## Notion data source requirements
 
