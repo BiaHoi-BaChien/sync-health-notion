@@ -15,6 +15,7 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.activity.ComponentActivity
@@ -25,9 +26,11 @@ import androidx.health.connect.client.permission.HealthPermission
 import androidx.health.connect.client.records.BloodPressureRecord
 import androidx.health.connect.client.records.HeartRateRecord
 import androidx.health.connect.client.records.StepsRecord
+import androidx.health.connect.client.records.metadata.Metadata
 import androidx.health.connect.client.request.AggregateRequest
 import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
+import androidx.health.connect.client.units.Pressure
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -46,15 +49,15 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
-import kotlin.math.abs
-import java.time.Duration
 import kotlin.coroutines.coroutineContext
 
 class MainActivity : ComponentActivity() {
     private val requiredPermissions = setOf(
         HealthPermission.getReadPermission(StepsRecord::class),
         HealthPermission.getReadPermission(BloodPressureRecord::class),
-        HealthPermission.getReadPermission(HeartRateRecord::class)
+        HealthPermission.getWritePermission(BloodPressureRecord::class),
+        HealthPermission.getReadPermission(HeartRateRecord::class),
+        HealthPermission.getWritePermission(HeartRateRecord::class)
     )
     private lateinit var permissionLauncher: ActivityResultLauncher<Set<String>>
     private lateinit var statusText: TextView
@@ -427,7 +430,7 @@ class MainActivity : ComponentActivity() {
             } else {
                 val granted = client.permissionController.getGrantedPermissions()
                 if (granted.contains(HealthPermission.getReadPermission(StepsRecord::class))) {
-                    stepsPhoneDateText.text = displayDateTime(readLatestYesterdayStepsTime(client))
+                    stepsPhoneDateText.text = displayDate(readLatestYesterdayStepsTime(client))
                 } else {
                     stepsPhoneDateText.text = "権限未許可"
                 }
@@ -449,7 +452,7 @@ class MainActivity : ComponentActivity() {
                     if (config.hasVitalsSettings()) NotionClient(config).latestYesterdayVitalsDate() else null
                 }.getOrNull()
                 withContext(Dispatchers.Main) {
-                    stepsNotionDateText.text = if (config.hasStepsSettings()) displayNotionDateTime(stepsDate) else "設定未完了"
+                    stepsNotionDateText.text = if (config.hasStepsSettings()) displayNotionDate(stepsDate) else "設定未完了"
                     vitalsNotionDateText.text = if (config.hasVitalsSettings()) displayNotionDateTime(vitalsDate) else "設定未完了"
                 }
             }
@@ -566,6 +569,16 @@ class MainActivity : ComponentActivity() {
             }
         }
         panel.addView(dialogMessage)
+        panel.addView(ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            isIndeterminate = true
+            indeterminateTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#44D7B6"))
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                (6 * density).toInt()
+            ).apply {
+                topMargin = (14 * density).toInt()
+            }
+        })
         panel.addView(Button(this).apply {
             text = "同期を中止"
             typeface = Typeface.DEFAULT_BOLD
@@ -654,15 +667,16 @@ class MainActivity : ComponentActivity() {
 
     private suspend fun syncUnsyncedVitals(client: HealthConnectClient, config: SyncConfig): Int {
         val notion = NotionClient(config)
-        var synced = 0
-        for (measurement in readVitalMeasurements(client)) {
-            coroutineContext.ensureActive()
-            if (!notion.hasVitalPage(measurement.measuredAt)) {
-                notion.createVitalPage(measurement)
-                synced++
-            }
+        val notionMeasurements = notion.readVitalMeasurements(lookbackDays)
+        val existingTimes = readVitalMeasurementTimes(client)
+        val measurementsToInsert = notionMeasurements.filter { it.measuredAt !in existingTimes }
+        coroutineContext.ensureActive()
+        if (measurementsToInsert.isEmpty()) {
+            return 0
         }
-        return synced
+
+        client.insertRecords(measurementsToInsert.flatMap { it.toHealthConnectRecords() })
+        return measurementsToInsert.size
     }
 
     private suspend fun readStepDays(client: HealthConnectClient): List<DailySteps> {
@@ -740,43 +754,30 @@ class MainActivity : ComponentActivity() {
         )
     }
 
-    private suspend fun readVitalMeasurements(client: HealthConnectClient): List<VitalMeasurement> {
+    private suspend fun readVitalMeasurementTimes(client: HealthConnectClient): Set<Instant> {
         val zone = ZoneId.systemDefault()
         val today = LocalDate.now()
         val start = today.minusDays(lookbackDays).atStartOfDay(zone).toInstant()
         val end = today.plusDays(1).atStartOfDay(zone).toInstant()
-        val bloodPressureRecords = client.readRecords(
+        return client.readRecords(
             ReadRecordsRequest(
                 recordType = BloodPressureRecord::class,
                 timeRangeFilter = TimeRangeFilter.between(start, end)
             )
-        ).records
-        val heartRateSamples = client.readRecords(
-            ReadRecordsRequest(
-                recordType = HeartRateRecord::class,
-                timeRangeFilter = TimeRangeFilter.between(start, end)
-            )
-        ).records.flatMap { it.samples }
-
-        return bloodPressureRecords.map { record ->
-            val nearestHeartRate = heartRateSamples
-                .filter { it.time.atZone(zone).toLocalDate() == record.time.atZone(zone).toLocalDate() }
-                .minByOrNull { abs(Duration.between(record.time, it.time).toMillis()) }
-            VitalMeasurement(
-                measuredAt = record.time,
-                systolic = record.systolic.inMillimetersOfMercury,
-                diastolic = record.diastolic.inMillimetersOfMercury,
-                heartRate = nearestHeartRate?.beatsPerMinute
-            )
-        }.sortedBy { it.measuredAt }
+        ).records.mapTo(mutableSetOf()) { it.time }
     }
-
-    private fun Instant.toLocalDate(): LocalDate = atZone(ZoneId.systemDefault()).toLocalDate()
 
     private fun displayDateTime(timestamp: Instant?): String {
         return timestamp
             ?.atZone(ZoneId.systemDefault())
             ?.format(DISPLAY_DATE_TIME_FORMATTER)
+            ?: "データなし"
+    }
+
+    private fun displayDate(timestamp: Instant?): String {
+        return timestamp
+            ?.atZone(ZoneId.systemDefault())
+            ?.format(DISPLAY_DATE_FORMATTER)
             ?: "データなし"
     }
 
@@ -786,6 +787,9 @@ class MainActivity : ComponentActivity() {
         }
         return value.timestamp?.let { displayDateTime(it) } ?: "${value.date} (日付のみ)"
     }
+
+    private fun displayNotionDate(value: NotionDateValue?): String =
+        value?.date?.format(DISPLAY_DATE_FORMATTER) ?: "データなし"
 }
 
 private data class SyncConfig(
@@ -828,6 +832,33 @@ private data class VitalMeasurement(
     val heartRate: Long?
 )
 
+private fun VitalMeasurement.toHealthConnectRecords(): List<androidx.health.connect.client.records.Record> {
+    val zoneOffset = measuredAt.atZone(ZoneId.systemDefault()).offset
+    return buildList {
+        add(
+            BloodPressureRecord(
+                time = measuredAt,
+                zoneOffset = zoneOffset,
+                metadata = Metadata.manualEntry("notion-blood-pressure-$measuredAt"),
+                systolic = Pressure.millimetersOfMercury(systolic),
+                diastolic = Pressure.millimetersOfMercury(diastolic)
+            )
+        )
+        if (heartRate != null) {
+            add(
+                HeartRateRecord(
+                    startTime = measuredAt,
+                    startZoneOffset = zoneOffset,
+                    endTime = measuredAt.plusSeconds(1),
+                    endZoneOffset = zoneOffset,
+                    samples = listOf(HeartRateRecord.Sample(measuredAt, heartRate)),
+                    metadata = Metadata.manualEntry("notion-heart-rate-$measuredAt")
+                )
+            )
+        }
+    }
+}
+
 private class NotionClient(private val config: SyncConfig) {
     fun latestYesterdayStepsDate(): NotionDateValue? =
         latestDateOnYesterday(validDataSourceId(config.stepsDataSourceId), config.stepsDateProperty)
@@ -855,31 +886,43 @@ private class NotionClient(private val config: SyncConfig) {
         request("POST", "https://api.notion.com/v1/pages", body)
     }
 
-    fun hasVitalPage(measuredAt: Instant): Boolean {
-        val existing = findVitalPageTimesOnDate(
-            dataSourceId = validDataSourceId(config.vitalsDataSourceId),
-            property = config.vitalsMeasuredAtProperty,
-            measuredAt = measuredAt
-        )
-        return existing.any { it == measuredAt }
-    }
+    fun readVitalMeasurements(lookbackDays: Long): List<VitalMeasurement> {
+        val zone = ZoneId.systemDefault()
+        val today = LocalDate.now(zone)
+        val start = today.minusDays(lookbackDays).atStartOfDay(zone).toInstant().toNotionDateTime()
+        val end = today.plusDays(1).atStartOfDay(zone).toInstant().toNotionDateTime()
+        val measurements = mutableListOf<VitalMeasurement>()
+        var cursor: String? = null
 
-    fun createVitalPage(measurement: VitalMeasurement) {
-        val properties = JSONObject()
-            .put(
-                config.vitalsMeasuredAtProperty,
-                JSONObject().put("date", JSONObject().put("start", measurement.measuredAt.toNotionDateTime()))
+        do {
+            val body = JSONObject()
+                .put(
+                    "filter",
+                    JSONObject().put(
+                        "and",
+                        JSONArray()
+                            .put(JSONObject().put("property", config.vitalsMeasuredAtProperty).put("date", JSONObject().put("on_or_after", start)))
+                            .put(JSONObject().put("property", config.vitalsMeasuredAtProperty).put("date", JSONObject().put("before", end)))
+                    )
+                )
+                .put("page_size", 100)
+            cursor?.let { body.put("start_cursor", it) }
+
+            val response = request(
+                "POST",
+                "https://api.notion.com/v1/data_sources/${validDataSourceId(config.vitalsDataSourceId)}/query",
+                body
             )
-            .put(config.systolicProperty, JSONObject().put("number", measurement.systolic))
-            .put(config.diastolicProperty, JSONObject().put("number", measurement.diastolic))
-        if (measurement.heartRate != null) {
-            properties.put(config.heartRateProperty, JSONObject().put("number", measurement.heartRate))
-        }
+            val results = response.optJSONArray("results") ?: JSONArray()
+            for (i in 0 until results.length()) {
+                results.optJSONObject(i)?.toVitalMeasurement()?.let { measurements.add(it) }
+            }
+            cursor = response.optString("next_cursor").takeIf {
+                response.optBoolean("has_more") && it.isNotBlank()
+            }
+        } while (cursor != null)
 
-        val body = JSONObject()
-            .put("parent", dataSourceParent(validDataSourceId(config.vitalsDataSourceId)))
-            .put("properties", properties)
-        request("POST", "https://api.notion.com/v1/pages", body)
+        return measurements.sortedBy { it.measuredAt }
     }
 
     private fun latestDateOnYesterday(dataSourceId: String, dateProperty: String): NotionDateValue? {
@@ -922,38 +965,22 @@ private class NotionClient(private val config: SyncConfig) {
     }
 
 
-    private fun findVitalPageTimesOnDate(
-        dataSourceId: String,
-        property: String,
-        measuredAt: Instant
-    ): List<Instant> {
-        val zone = ZoneId.systemDefault()
-        val dayStart = measuredAt.atZone(zone).toLocalDate().atStartOfDay(zone).toInstant().toNotionDateTime()
-        val nextDayStart = measuredAt.atZone(zone).toLocalDate().plusDays(1).atStartOfDay(zone).toInstant().toNotionDateTime()
-        val body = JSONObject()
-            .put(
-                "filter",
-                JSONObject()
-                    .put("and", JSONArray()
-                        .put(JSONObject().put("property", property).put("date", JSONObject().put("on_or_after", dayStart)))
-                        .put(JSONObject().put("property", property).put("date", JSONObject().put("before", nextDayStart)))
-                    )
-            )
-            .put("page_size", 100)
-        val response = request("POST", "https://api.notion.com/v1/data_sources/$dataSourceId/query", body)
-        val results = response.optJSONArray("results") ?: return emptyList()
-        return buildList {
-            for (i in 0 until results.length()) {
-                val value = results.optJSONObject(i)
-                    ?.optJSONObject("properties")
-                    ?.optJSONObject(property)
-                    ?.optJSONObject("date")
-                    ?.optString("start")
-                    ?.takeIf { it.isNotBlank() }
-                    ?: continue
-                runCatching { Instant.parse(value) }.getOrNull()?.let { add(it) }
-            }
-        }
+    private fun JSONObject.toVitalMeasurement(): VitalMeasurement? {
+        val properties = optJSONObject("properties") ?: return null
+        val measuredAt = properties.optJSONObject(config.vitalsMeasuredAtProperty)
+            ?.optJSONObject("date")
+            ?.optString("start")
+            ?.takeIf { it.isNotBlank() }
+            ?.let { runCatching { Instant.parse(it) }.getOrNull() }
+            ?: return null
+        val systolic = properties.notionNumber(config.systolicProperty) ?: return null
+        val diastolic = properties.notionNumber(config.diastolicProperty) ?: return null
+        return VitalMeasurement(
+            measuredAt = measuredAt,
+            systolic = systolic,
+            diastolic = diastolic,
+            heartRate = properties.notionNumber(config.heartRateProperty)?.toLong()
+        )
     }
 
     private fun findPage(dataSourceId: String, property: String, dateValue: String): String? {
@@ -1007,9 +1034,15 @@ private class NotionClient(private val config: SyncConfig) {
     }
 }
 
+private fun JSONObject.notionNumber(property: String): Double? =
+    optJSONObject(property)
+        ?.takeIf { !it.isNull("number") }
+        ?.optDouble("number")
+
 private fun Instant.toNotionDateTime(): String =
     DateTimeFormatter.ISO_OFFSET_DATE_TIME.format(atZone(ZoneId.systemDefault()))
 
+private val DISPLAY_DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd")
 private val DISPLAY_DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
 
 private val DATA_SOURCE_ID_PATTERN = Regex("^[A-Za-z0-9-]{16,128}$")
