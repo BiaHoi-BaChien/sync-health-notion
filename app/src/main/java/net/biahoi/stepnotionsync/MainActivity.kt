@@ -1,15 +1,19 @@
 package net.biahoi.stepnotionsync
 
+import android.app.Dialog
 import android.content.Context
 import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.text.InputType
 import android.view.Gravity
+import android.view.Window
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -24,8 +28,11 @@ import androidx.health.connect.client.records.StepsRecord
 import androidx.health.connect.client.request.AggregateRequest
 import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -41,6 +48,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import kotlin.math.abs
 import java.time.Duration
+import kotlin.coroutines.coroutineContext
 
 class MainActivity : ComponentActivity() {
     private val requiredPermissions = setOf(
@@ -63,6 +71,9 @@ class MainActivity : ComponentActivity() {
     private lateinit var systolicPropertyInput: EditText
     private lateinit var diastolicPropertyInput: EditText
     private lateinit var heartRatePropertyInput: EditText
+    private var currentSyncJob: Job? = null
+    private var syncDialog: Dialog? = null
+    private var syncDialogMessageText: TextView? = null
     private val lookbackDays = 30L
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -78,6 +89,12 @@ class MainActivity : ComponentActivity() {
             refreshLatestDates()
         }
         showTopPage()
+    }
+
+    override fun onDestroy() {
+        currentSyncJob?.cancel()
+        dismissSyncDialog()
+        super.onDestroy()
     }
 
     private fun showTopPage() {
@@ -112,7 +129,7 @@ class MainActivity : ComponentActivity() {
         root.addView(header)
 
         root.addView(TextView(this).apply {
-            text = "スマホとNotionの最新データ日付"
+            text = "スマホとNotionの昨日の最新データ日時"
             textSize = 14f
             setTextColor(Color.parseColor("#AAB7C4"))
             setPadding(0, (4 * density).toInt(), 0, (16 * density).toInt())
@@ -410,7 +427,7 @@ class MainActivity : ComponentActivity() {
             } else {
                 val granted = client.permissionController.getGrantedPermissions()
                 if (granted.contains(HealthPermission.getReadPermission(StepsRecord::class))) {
-                    stepsPhoneDateText.text = displayDate(readLatestStepsDate(client))
+                    stepsPhoneDateText.text = displayDateTime(readLatestYesterdayStepsTime(client))
                 } else {
                     stepsPhoneDateText.text = "権限未許可"
                 }
@@ -418,7 +435,7 @@ class MainActivity : ComponentActivity() {
                     granted.contains(HealthPermission.getReadPermission(BloodPressureRecord::class)) ||
                         granted.contains(HealthPermission.getReadPermission(HeartRateRecord::class))
                 ) {
-                    vitalsPhoneDateText.text = displayDate(readLatestVitalsDate(client, granted))
+                    vitalsPhoneDateText.text = displayDateTime(readLatestYesterdayVitalsTime(client, granted))
                 } else {
                     vitalsPhoneDateText.text = "権限未許可"
                 }
@@ -426,14 +443,14 @@ class MainActivity : ComponentActivity() {
 
             withContext(Dispatchers.IO) {
                 val stepsDate = runCatching {
-                    if (config.hasStepsSettings()) NotionClient(config).latestStepsDate() else null
+                    if (config.hasStepsSettings()) NotionClient(config).latestYesterdayStepsDate() else null
                 }.getOrNull()
                 val vitalsDate = runCatching {
-                    if (config.hasVitalsSettings()) NotionClient(config).latestVitalsDate() else null
+                    if (config.hasVitalsSettings()) NotionClient(config).latestYesterdayVitalsDate() else null
                 }.getOrNull()
                 withContext(Dispatchers.Main) {
-                    stepsNotionDateText.text = if (config.hasStepsSettings()) displayDate(stepsDate) else "設定未完了"
-                    vitalsNotionDateText.text = if (config.hasVitalsSettings()) displayDate(vitalsDate) else "設定未完了"
+                    stepsNotionDateText.text = if (config.hasStepsSettings()) displayNotionDateTime(stepsDate) else "設定未完了"
+                    vitalsNotionDateText.text = if (config.hasVitalsSettings()) displayNotionDateTime(vitalsDate) else "設定未完了"
                 }
             }
         }
@@ -446,16 +463,12 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        CoroutineScope(Dispatchers.Main).launch {
-            statusText.text = "歩数データを同期中..."
-            try {
-                val client = checkedHealthClient() ?: return@launch
-                val synced = withContext(Dispatchers.IO) { syncUnsyncedSteps(client, config) }
-                statusText.text = "歩数データを${synced}件同期しました。本日の歩数データは同期していません。"
-                refreshLatestDates()
-            } catch (e: Exception) {
-                statusText.text = "歩数データの同期に失敗しました: ${safeErrorMessage(e)}"
-            }
+        startSync(
+            syncMessage = "歩数データを同期中...",
+            failurePrefix = "歩数データの同期に失敗しました"
+        ) { client ->
+            val synced = syncUnsyncedSteps(client, config)
+            "歩数データを${synced}件同期しました。本日の歩数データは同期していません。"
         }
     }
 
@@ -466,16 +479,12 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        CoroutineScope(Dispatchers.Main).launch {
-            statusText.text = "血圧・心拍データを同期中..."
-            try {
-                val client = checkedHealthClient() ?: return@launch
-                val synced = withContext(Dispatchers.IO) { syncUnsyncedVitals(client, config) }
-                statusText.text = "血圧・心拍データを${synced}件同期しました。"
-                refreshLatestDates()
-            } catch (e: Exception) {
-                statusText.text = "血圧・心拍データの同期に失敗しました: ${safeErrorMessage(e)}"
-            }
+        startSync(
+            syncMessage = "血圧・心拍データを同期中...",
+            failurePrefix = "血圧・心拍データの同期に失敗しました"
+        ) { client ->
+            val synced = syncUnsyncedVitals(client, config)
+            "血圧・心拍データを${synced}件同期しました。"
         }
     }
 
@@ -486,21 +495,119 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        CoroutineScope(Dispatchers.Main).launch {
-            statusText.text = "すべてのデータを同期中..."
+        startSync(
+            syncMessage = "すべてのデータを同期中...",
+            failurePrefix = "同期に失敗しました"
+        ) { client ->
+            val steps = syncUnsyncedSteps(client, config)
+            val vitals = syncUnsyncedVitals(client, config)
+            "歩数${steps}件、血圧・心拍${vitals}件を同期しました。"
+        }
+    }
+
+    private fun startSync(
+        syncMessage: String,
+        failurePrefix: String,
+        sync: suspend (HealthConnectClient) -> String
+    ) {
+        if (currentSyncJob?.isActive == true) {
+            return
+        }
+
+        statusText.text = syncMessage
+        showSyncDialog(syncMessage)
+        currentSyncJob = CoroutineScope(Dispatchers.Main).launch {
             try {
                 val client = checkedHealthClient() ?: return@launch
-                val result = withContext(Dispatchers.IO) {
-                    val steps = syncUnsyncedSteps(client, config)
-                    val vitals = syncUnsyncedVitals(client, config)
-                    steps to vitals
-                }
-                statusText.text = "歩数${result.first}件、血圧・心拍${result.second}件を同期しました。"
+                val resultMessage = withContext(Dispatchers.IO) { sync(client) }
+                statusText.text = resultMessage
                 refreshLatestDates()
+            } catch (_: CancellationException) {
+                statusText.text = "同期を中止しました。"
             } catch (e: Exception) {
-                statusText.text = "同期に失敗しました: ${safeErrorMessage(e)}"
+                statusText.text = "$failurePrefix: ${safeErrorMessage(e)}"
+            } finally {
+                currentSyncJob = null
+                dismissSyncDialog()
             }
         }
+    }
+
+    private fun showSyncDialog(message: String) {
+        val density = resources.displayMetrics.density
+        val dialogMessage = TextView(this).apply {
+            text = message
+            textSize = 20f
+            setTextColor(Color.WHITE)
+            typeface = Typeface.DEFAULT_BOLD
+        }
+        syncDialogMessageText = dialogMessage
+
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(
+                (20 * density).toInt(),
+                (20 * density).toInt(),
+                (20 * density).toInt(),
+                (18 * density).toInt()
+            )
+            background = GradientDrawable().apply {
+                cornerRadius = 14 * density
+                setColor(Color.parseColor("#17232D"))
+                setStroke((1 * density).toInt(), Color.parseColor("#44D7B6"))
+            }
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER
+            ).apply {
+                leftMargin = (28 * density).toInt()
+                rightMargin = (28 * density).toInt()
+            }
+        }
+        panel.addView(dialogMessage)
+        panel.addView(Button(this).apply {
+            text = "同期を中止"
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.WHITE)
+            background = GradientDrawable().apply {
+                cornerRadius = 10 * density
+                setColor(Color.parseColor("#B93845"))
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = (18 * density).toInt()
+            }
+            setOnClickListener {
+                isEnabled = false
+                syncDialogMessageText?.text = "同期を中止しています..."
+                currentSyncJob?.cancel()
+            }
+        })
+
+        syncDialog = Dialog(this).apply {
+            requestWindowFeature(Window.FEATURE_NO_TITLE)
+            setCancelable(false)
+            setCanceledOnTouchOutside(false)
+            setContentView(FrameLayout(this@MainActivity).apply {
+                addView(panel)
+            })
+            window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            window?.setDimAmount(0.76f)
+            show()
+            window?.setLayout(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        }
+    }
+
+    private fun dismissSyncDialog() {
+        syncDialog?.dismiss()
+        syncDialog = null
+        syncDialogMessageText = null
     }
 
     private fun safeErrorMessage(error: Exception): String {
@@ -536,6 +643,7 @@ class MainActivity : ComponentActivity() {
         val notion = NotionClient(config)
         var synced = 0
         for (dailySteps in readStepDays(client)) {
+            coroutineContext.ensureActive()
             if (!notion.hasStepPage(dailySteps.date)) {
                 notion.createStepPage(dailySteps.date, dailySteps.steps)
                 synced++
@@ -548,6 +656,7 @@ class MainActivity : ComponentActivity() {
         val notion = NotionClient(config)
         var synced = 0
         for (measurement in readVitalMeasurements(client)) {
+            coroutineContext.ensureActive()
             if (!notion.hasVitalPage(measurement.measuredAt)) {
                 notion.createVitalPage(measurement)
                 synced++
@@ -578,53 +687,57 @@ class MainActivity : ComponentActivity() {
         return response[StepsRecord.COUNT_TOTAL] ?: 0L
     }
 
-    private suspend fun readLatestStepsDate(client: HealthConnectClient): LocalDate? {
+    private suspend fun readLatestYesterdayStepsTime(client: HealthConnectClient): Instant? {
         return client.readRecords(
             ReadRecordsRequest(
                 recordType = StepsRecord::class,
-                timeRangeFilter = latestRecordTimeRange(),
+                timeRangeFilter = yesterdayRecordTimeRange(),
                 ascendingOrder = false,
                 pageSize = 1
             )
-        ).records.firstOrNull()?.endTime?.toLocalDate()
+        ).records.firstOrNull()?.endTime
     }
 
-    private suspend fun readLatestVitalsDate(client: HealthConnectClient, granted: Set<String>): LocalDate? {
-        val dates = mutableListOf<LocalDate>()
+    private suspend fun readLatestYesterdayVitalsTime(client: HealthConnectClient, granted: Set<String>): Instant? {
+        val timestamps = mutableListOf<Instant>()
         if (granted.contains(HealthPermission.getReadPermission(BloodPressureRecord::class))) {
-            readLatestBloodPressureDate(client)?.let { dates.add(it) }
+            readLatestYesterdayBloodPressureTime(client)?.let { timestamps.add(it) }
         }
         if (granted.contains(HealthPermission.getReadPermission(HeartRateRecord::class))) {
-            readLatestHeartRateDate(client)?.let { dates.add(it) }
+            readLatestYesterdayHeartRateTime(client)?.let { timestamps.add(it) }
         }
-        return dates.maxOrNull()
+        return timestamps.maxOrNull()
     }
 
-    private suspend fun readLatestBloodPressureDate(client: HealthConnectClient): LocalDate? {
+    private suspend fun readLatestYesterdayBloodPressureTime(client: HealthConnectClient): Instant? {
         return client.readRecords(
             ReadRecordsRequest(
                 recordType = BloodPressureRecord::class,
-                timeRangeFilter = latestRecordTimeRange(),
+                timeRangeFilter = yesterdayRecordTimeRange(),
                 ascendingOrder = false,
                 pageSize = 1
             )
-        ).records.firstOrNull()?.time?.toLocalDate()
+        ).records.firstOrNull()?.time
     }
 
-    private suspend fun readLatestHeartRateDate(client: HealthConnectClient): LocalDate? {
+    private suspend fun readLatestYesterdayHeartRateTime(client: HealthConnectClient): Instant? {
         return client.readRecords(
             ReadRecordsRequest(
                 recordType = HeartRateRecord::class,
-                timeRangeFilter = latestRecordTimeRange(),
+                timeRangeFilter = yesterdayRecordTimeRange(),
                 ascendingOrder = false,
                 pageSize = 1
             )
-        ).records.firstOrNull()?.endTime?.toLocalDate()
+        ).records.firstOrNull()?.endTime
     }
 
-    private fun latestRecordTimeRange(): TimeRangeFilter {
-        val now = Instant.now()
-        return TimeRangeFilter.between(now.minusSeconds(3650L * 24 * 60 * 60), now.plusSeconds(24 * 60 * 60))
+    private fun yesterdayRecordTimeRange(): TimeRangeFilter {
+        val zone = ZoneId.systemDefault()
+        val today = LocalDate.now(zone)
+        return TimeRangeFilter.between(
+            today.minusDays(1).atStartOfDay(zone).toInstant(),
+            today.atStartOfDay(zone).toInstant()
+        )
     }
 
     private suspend fun readVitalMeasurements(client: HealthConnectClient): List<VitalMeasurement> {
@@ -660,7 +773,19 @@ class MainActivity : ComponentActivity() {
 
     private fun Instant.toLocalDate(): LocalDate = atZone(ZoneId.systemDefault()).toLocalDate()
 
-    private fun displayDate(date: LocalDate?): String = date?.toString() ?: "データなし"
+    private fun displayDateTime(timestamp: Instant?): String {
+        return timestamp
+            ?.atZone(ZoneId.systemDefault())
+            ?.format(DISPLAY_DATE_TIME_FORMATTER)
+            ?: "データなし"
+    }
+
+    private fun displayNotionDateTime(value: NotionDateValue?): String {
+        if (value == null) {
+            return "データなし"
+        }
+        return value.timestamp?.let { displayDateTime(it) } ?: "${value.date} (日付のみ)"
+    }
 }
 
 private data class SyncConfig(
@@ -691,6 +816,11 @@ private data class SyncConfig(
 
 private data class DailySteps(val date: LocalDate, val steps: Long)
 
+private data class NotionDateValue(
+    val date: LocalDate,
+    val timestamp: Instant?
+)
+
 private data class VitalMeasurement(
     val measuredAt: Instant,
     val systolic: Double,
@@ -699,9 +829,11 @@ private data class VitalMeasurement(
 )
 
 private class NotionClient(private val config: SyncConfig) {
-    fun latestStepsDate(): LocalDate? = latestDate(validDataSourceId(config.stepsDataSourceId), config.stepsDateProperty)
+    fun latestYesterdayStepsDate(): NotionDateValue? =
+        latestDateOnYesterday(validDataSourceId(config.stepsDataSourceId), config.stepsDateProperty)
 
-    fun latestVitalsDate(): LocalDate? = latestDate(validDataSourceId(config.vitalsDataSourceId), config.vitalsMeasuredAtProperty)
+    fun latestYesterdayVitalsDate(): NotionDateValue? =
+        latestDateOnYesterday(validDataSourceId(config.vitalsDataSourceId), config.vitalsMeasuredAtProperty)
 
     fun hasStepPage(date: LocalDate): Boolean {
         return findPage(
@@ -750,8 +882,20 @@ private class NotionClient(private val config: SyncConfig) {
         request("POST", "https://api.notion.com/v1/pages", body)
     }
 
-    private fun latestDate(dataSourceId: String, dateProperty: String): LocalDate? {
+    private fun latestDateOnYesterday(dataSourceId: String, dateProperty: String): NotionDateValue? {
+        val zone = ZoneId.systemDefault()
+        val today = LocalDate.now(zone)
+        val yesterdayStart = today.minusDays(1).atStartOfDay(zone).toInstant().toNotionDateTime()
+        val todayStart = today.atStartOfDay(zone).toInstant().toNotionDateTime()
         val body = JSONObject()
+            .put(
+                "filter",
+                JSONObject()
+                    .put("and", JSONArray()
+                        .put(JSONObject().put("property", dateProperty).put("date", JSONObject().put("on_or_after", yesterdayStart)))
+                        .put(JSONObject().put("property", dateProperty).put("date", JSONObject().put("before", todayStart)))
+                    )
+            )
             .put(
                 "sorts",
                 JSONArray().put(
@@ -769,7 +913,12 @@ private class NotionClient(private val config: SyncConfig) {
             ?.optJSONObject("date")
             ?.optString("start")
             ?.takeIf { it.isNotBlank() }
-        return start?.let { LocalDate.parse(it.take(10)) }
+        return start?.let {
+            NotionDateValue(
+                date = LocalDate.parse(it.take(10)),
+                timestamp = runCatching { Instant.parse(it) }.getOrNull()
+            )
+        }
     }
 
 
@@ -860,6 +1009,8 @@ private class NotionClient(private val config: SyncConfig) {
 
 private fun Instant.toNotionDateTime(): String =
     DateTimeFormatter.ISO_OFFSET_DATE_TIME.format(atZone(ZoneId.systemDefault()))
+
+private val DISPLAY_DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
 
 private val DATA_SOURCE_ID_PATTERN = Regex("^[A-Za-z0-9-]{16,128}$")
 
