@@ -118,13 +118,13 @@ class MainActivity : ComponentActivity() {
             setPadding(0, (4 * density).toInt(), 0, (16 * density).toInt())
         })
 
-        root.addSummaryCard("歩数").also { section ->
-            stepsPhoneDateText = section.addDateRow("スマホ側")
-            stepsNotionDateText = section.addDateRow("Notion側")
+        root.addSummaryCard("歩数", "同期方向: スマホ → Notion").also { section ->
+            stepsPhoneDateText = section.addDateRow("スマホ側", "送信元")
+            stepsNotionDateText = section.addDateRow("Notion側", "送信先")
         }
-        root.addSummaryCard("バイタル").also { section ->
-            vitalsPhoneDateText = section.addDateRow("スマホ側")
-            vitalsNotionDateText = section.addDateRow("Notion側")
+        root.addSummaryCard("バイタル", "同期方向: Notion → スマホ").also { section ->
+            vitalsPhoneDateText = section.addDateRow("スマホ側", "送信先")
+            vitalsNotionDateText = section.addDateRow("Notion側", "送信元")
         }
 
         root.addButton("Health Connect権限を許可") { requestHealthPermission() }
@@ -214,7 +214,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun LinearLayout.addSummaryCard(title: String): LinearLayout {
+    private fun LinearLayout.addSummaryCard(title: String, direction: String): LinearLayout {
         val density = resources.displayMetrics.density
         val card = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
@@ -237,11 +237,17 @@ class MainActivity : ComponentActivity() {
             setTextColor(Color.WHITE)
             typeface = Typeface.DEFAULT_BOLD
         })
+        card.addView(TextView(context).apply {
+            text = direction
+            textSize = 13f
+            setTextColor(Color.parseColor("#7ED7FF"))
+            setPadding(0, (4 * density).toInt(), 0, 0)
+        })
         addView(card)
         return card
     }
 
-    private fun LinearLayout.addDateRow(label: String): TextView {
+    private fun LinearLayout.addDateRow(label: String, role: String): TextView {
         val density = resources.displayMetrics.density
         val row = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -249,7 +255,7 @@ class MainActivity : ComponentActivity() {
             setPadding(0, (10 * density).toInt(), 0, 0)
         }
         row.addView(TextView(context).apply {
-            text = label
+            text = "$label（$role）"
             textSize = 14f
             setTextColor(Color.parseColor("#AAB7C4"))
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
