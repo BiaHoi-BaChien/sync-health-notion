@@ -29,6 +29,13 @@ The blood pressure data source must have:
 
 The parent databases must be shared with the Notion integration. Use data source IDs, not database IDs.
 
+## Security notes
+
+- The app reads and writes health data only after the user taps a sync button.
+- The Notion integration token is entered on the device and stored locally with Android Keystore-backed encryption.
+- Use a Notion integration that is shared only with the data sources this app needs.
+- `local.properties` is local Android SDK configuration and must not be committed.
+
 ## Build
 
 Install Android Studio and Android SDK, then build:
@@ -45,8 +52,8 @@ app\build\outputs\apk\debug\app-debug.apk
 
 ## Install
 
-Enable USB debugging on the Pixel device, then run:
+Enable USB debugging on the Pixel device, then install with Gradle:
 
 ```powershell
-& 'D:\Users\Sugi\AppData\Local\Android\Sdk\platform-tools\adb.exe' install -r app\build\outputs\apk\debug\app-debug.apk
+.\gradlew.bat installDebug
 ```
