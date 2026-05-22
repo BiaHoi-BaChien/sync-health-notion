@@ -724,11 +724,12 @@ private class NotionClient(private val config: SyncConfig) {
     }
 
     fun hasVitalPage(measuredAt: Instant): Boolean {
-        return findPage(
+        val existing = findVitalPageTimesOnDate(
             dataSourceId = validDataSourceId(config.vitalsDataSourceId),
             property = config.vitalsMeasuredAtProperty,
-            dateValue = measuredAt.toNotionDateTime()
-        ) != null
+            measuredAt = measuredAt
+        )
+        return existing.any { it == measuredAt }
     }
 
     fun createVitalPage(measurement: VitalMeasurement) {
@@ -769,6 +770,41 @@ private class NotionClient(private val config: SyncConfig) {
             ?.optString("start")
             ?.takeIf { it.isNotBlank() }
         return start?.let { LocalDate.parse(it.take(10)) }
+    }
+
+
+    private fun findVitalPageTimesOnDate(
+        dataSourceId: String,
+        property: String,
+        measuredAt: Instant
+    ): List<Instant> {
+        val zone = ZoneId.systemDefault()
+        val dayStart = measuredAt.atZone(zone).toLocalDate().atStartOfDay(zone).toInstant().toNotionDateTime()
+        val nextDayStart = measuredAt.atZone(zone).toLocalDate().plusDays(1).atStartOfDay(zone).toInstant().toNotionDateTime()
+        val body = JSONObject()
+            .put(
+                "filter",
+                JSONObject()
+                    .put("and", JSONArray()
+                        .put(JSONObject().put("property", property).put("date", JSONObject().put("on_or_after", dayStart)))
+                        .put(JSONObject().put("property", property).put("date", JSONObject().put("before", nextDayStart)))
+                    )
+            )
+            .put("page_size", 100)
+        val response = request("POST", "https://api.notion.com/v1/data_sources/$dataSourceId/query", body)
+        val results = response.optJSONArray("results") ?: return emptyList()
+        return buildList {
+            for (i in 0 until results.length()) {
+                val value = results.optJSONObject(i)
+                    ?.optJSONObject("properties")
+                    ?.optJSONObject(property)
+                    ?.optJSONObject("date")
+                    ?.optString("start")
+                    ?.takeIf { it.isNotBlank() }
+                    ?: continue
+                runCatching { Instant.parse(value) }.getOrNull()?.let { add(it) }
+            }
+        }
     }
 
     private fun findPage(dataSourceId: String, property: String, dateValue: String): String? {
