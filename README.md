@@ -6,7 +6,7 @@ Android app for Pixel devices that reads health data from Health Connect and syn
 
 - Reads step counts, blood pressure records, and heart rate samples from Health Connect.
 - Excludes today's step data from sync because it may still change.
-- Shows the latest phone-side and Notion-side dates for step and vital data on the top page.
+- Shows yesterday's latest phone-side and Notion-side timestamps for step and vital data on the top page.
 - Syncs only when the user taps `歩数データを同期`, `血圧・心拍データを同期`, or `すべて同期`.
 - Stores the Notion integration token locally using Android Keystore-backed encryption.
 - Stores data source IDs and property names locally on the device.
