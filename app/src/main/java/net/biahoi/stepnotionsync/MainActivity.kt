@@ -429,7 +429,7 @@ class MainActivity : ComponentActivity() {
             } else {
                 val granted = client.permissionController.getGrantedPermissions()
                 if (granted.contains(HealthPermission.getReadPermission(StepsRecord::class))) {
-                    stepsPhoneDateText.text = displayDate(readLatestYesterdayStepsTime(client))
+                    stepsPhoneDateText.text = displayDateTime(readLatestStepsTime(client, recentRecordTimeRange()))
                 } else {
                     stepsPhoneDateText.text = "権限未許可"
                 }
@@ -437,7 +437,7 @@ class MainActivity : ComponentActivity() {
                     granted.contains(HealthPermission.getReadPermission(BloodPressureRecord::class)) ||
                         granted.contains(HealthPermission.getReadPermission(HeartRateRecord::class))
                 ) {
-                    vitalsPhoneDateText.text = displayDateTime(readLatestYesterdayVitalsTime(client, granted))
+                    vitalsPhoneDateText.text = displayDateTime(readLatestVitalsTime(client, granted))
                 } else {
                     vitalsPhoneDateText.text = "権限未許可"
                 }
@@ -445,13 +445,13 @@ class MainActivity : ComponentActivity() {
 
             withContext(Dispatchers.IO) {
                 val stepsDate = runCatching {
-                    if (config.hasStepsSettings()) NotionClient(config).latestYesterdayStepsDate() else null
+                    if (config.hasStepsSettings()) NotionClient(config).latestStepsDate(lookbackDays) else null
                 }.getOrNull()
                 val vitalsDate = runCatching {
-                    if (config.hasVitalsSettings()) NotionClient(config).latestYesterdayVitalsDate() else null
+                    if (config.hasVitalsSettings()) NotionClient(config).latestVitalsDate(lookbackDays) else null
                 }.getOrNull()
                 withContext(Dispatchers.Main) {
-                    stepsNotionDateText.text = if (config.hasStepsSettings()) displayNotionDate(stepsDate) else "設定未完了"
+                    stepsNotionDateText.text = if (config.hasStepsSettings()) displayNotionDateTime(stepsDate) else "設定未完了"
                     vitalsNotionDateText.text = if (config.hasVitalsSettings()) displayNotionDateTime(vitalsDate) else "設定未完了"
                 }
             }
@@ -684,7 +684,7 @@ class MainActivity : ComponentActivity() {
         val zone = ZoneId.systemDefault()
         val today = LocalDate.now(zone)
         val start = today.minusDays(lookbackDays).atStartOfDay(zone).toInstant()
-        val end = today.atStartOfDay(zone).toInstant()
+        val end = today.plusDays(1).atStartOfDay(zone).toInstant()
         return client.readRecords(
             ReadRecordsRequest(
                 recordType = StepsRecord::class,
@@ -697,56 +697,64 @@ class MainActivity : ComponentActivity() {
             .map { StepMeasurement(recordedAt = it.startTime, steps = it.count) }
     }
 
-    private suspend fun readLatestYesterdayStepsTime(client: HealthConnectClient): Instant? {
+    private suspend fun readLatestStepsTime(client: HealthConnectClient, timeRange: TimeRangeFilter): Instant? {
         return client.readRecords(
             ReadRecordsRequest(
                 recordType = StepsRecord::class,
-                timeRangeFilter = yesterdayRecordTimeRange(),
+                timeRangeFilter = timeRange,
                 ascendingOrder = false,
                 pageSize = 1
             )
         ).records.firstOrNull()?.endTime
     }
 
-    private suspend fun readLatestYesterdayVitalsTime(client: HealthConnectClient, granted: Set<String>): Instant? {
+    private suspend fun readLatestVitalsTime(client: HealthConnectClient, granted: Set<String>): Instant? {
         val timestamps = mutableListOf<Instant>()
         if (granted.contains(HealthPermission.getReadPermission(BloodPressureRecord::class))) {
-            readLatestYesterdayBloodPressureTime(client)?.let { timestamps.add(it) }
+            readLatestBloodPressureTime(client)?.let { timestamps.add(it) }
         }
         if (granted.contains(HealthPermission.getReadPermission(HeartRateRecord::class))) {
-            readLatestYesterdayHeartRateTime(client)?.let { timestamps.add(it) }
+            readLatestHeartRateTime(client)?.let { timestamps.add(it) }
         }
         return timestamps.maxOrNull()
     }
 
-    private suspend fun readLatestYesterdayBloodPressureTime(client: HealthConnectClient): Instant? {
+    private suspend fun readLatestBloodPressureTime(client: HealthConnectClient): Instant? {
         return client.readRecords(
             ReadRecordsRequest(
                 recordType = BloodPressureRecord::class,
-                timeRangeFilter = yesterdayRecordTimeRange(),
+                timeRangeFilter = recentRecordTimeRange(),
                 ascendingOrder = false,
                 pageSize = 1
             )
         ).records.firstOrNull()?.time
     }
 
-    private suspend fun readLatestYesterdayHeartRateTime(client: HealthConnectClient): Instant? {
+    private suspend fun readLatestHeartRateTime(client: HealthConnectClient): Instant? {
         return client.readRecords(
             ReadRecordsRequest(
                 recordType = HeartRateRecord::class,
-                timeRangeFilter = yesterdayRecordTimeRange(),
+                timeRangeFilter = recentRecordTimeRange(),
                 ascendingOrder = false,
                 pageSize = 1
             )
         ).records.firstOrNull()?.endTime
     }
 
-    private fun yesterdayRecordTimeRange(): TimeRangeFilter {
+    private fun recordTimeRangeForDate(date: LocalDate): TimeRangeFilter {
+        val zone = ZoneId.systemDefault()
+        return TimeRangeFilter.between(
+            date.atStartOfDay(zone).toInstant(),
+            date.plusDays(1).atStartOfDay(zone).toInstant()
+        )
+    }
+
+    private fun recentRecordTimeRange(): TimeRangeFilter {
         val zone = ZoneId.systemDefault()
         val today = LocalDate.now(zone)
         return TimeRangeFilter.between(
-            today.minusDays(1).atStartOfDay(zone).toInstant(),
-            today.atStartOfDay(zone).toInstant()
+            today.minusDays(lookbackDays).atStartOfDay(zone).toInstant(),
+            today.plusDays(1).atStartOfDay(zone).toInstant()
         )
     }
 
@@ -770,13 +778,6 @@ class MainActivity : ComponentActivity() {
             ?: "データなし"
     }
 
-    private fun displayDate(timestamp: Instant?): String {
-        return timestamp
-            ?.atZone(ZoneId.systemDefault())
-            ?.format(DISPLAY_DATE_FORMATTER)
-            ?: "データなし"
-    }
-
     private fun displayNotionDateTime(value: NotionDateValue?): String {
         if (value == null) {
             return "データなし"
@@ -784,8 +785,6 @@ class MainActivity : ComponentActivity() {
         return value.timestamp?.let { displayDateTime(it) } ?: "${value.date} (日付のみ)"
     }
 
-    private fun displayNotionDate(value: NotionDateValue?): String =
-        value?.date?.format(DISPLAY_DATE_FORMATTER) ?: "データなし"
 }
 
 private data class SyncConfig(
@@ -856,18 +855,18 @@ private fun VitalMeasurement.toHealthConnectRecords(): List<androidx.health.conn
 }
 
 private class NotionClient(private val config: SyncConfig) {
-    fun latestYesterdayStepsDate(): NotionDateValue? =
-        latestDateOnYesterday(validDataSourceId(config.stepsDataSourceId), config.stepsDateProperty)
+    fun latestStepsDate(lookbackDays: Long): NotionDateValue? =
+        latestDateInSyncWindow(validDataSourceId(config.stepsDataSourceId), config.stepsDateProperty, lookbackDays)
 
-    fun latestYesterdayVitalsDate(): NotionDateValue? =
-        latestDateOnYesterday(validDataSourceId(config.vitalsDataSourceId), config.vitalsMeasuredAtProperty)
+    fun latestVitalsDate(lookbackDays: Long): NotionDateValue? =
+        latestDateInSyncWindow(validDataSourceId(config.vitalsDataSourceId), config.vitalsMeasuredAtProperty, lookbackDays)
 
     fun readStepTimes(lookbackDays: Long): Set<Instant> {
         return readDateTimes(
             dataSourceId = validDataSourceId(config.stepsDataSourceId),
             dateProperty = config.stepsDateProperty,
             lookbackDays = lookbackDays,
-            includeToday = false
+            includeToday = true
         )
     }
 
@@ -886,8 +885,8 @@ private class NotionClient(private val config: SyncConfig) {
     fun readVitalMeasurements(lookbackDays: Long): List<VitalMeasurement> {
         val zone = ZoneId.systemDefault()
         val today = LocalDate.now(zone)
-        val start = today.minusDays(lookbackDays).atStartOfDay(zone).toInstant().toNotionDateTime()
-        val end = today.plusDays(1).atStartOfDay(zone).toInstant().toNotionDateTime()
+        val windowStart = today.minusDays(lookbackDays).atStartOfDay(zone).toInstant().toNotionDateTime()
+        val windowEnd = today.plusDays(1).atStartOfDay(zone).toInstant().toNotionDateTime()
         val measurements = mutableListOf<VitalMeasurement>()
         var cursor: String? = null
 
@@ -898,8 +897,8 @@ private class NotionClient(private val config: SyncConfig) {
                     JSONObject().put(
                         "and",
                         JSONArray()
-                            .put(JSONObject().put("property", config.vitalsMeasuredAtProperty).put("date", JSONObject().put("on_or_after", start)))
-                            .put(JSONObject().put("property", config.vitalsMeasuredAtProperty).put("date", JSONObject().put("before", end)))
+                            .put(JSONObject().put("property", config.vitalsMeasuredAtProperty).put("date", JSONObject().put("on_or_after", windowStart)))
+                            .put(JSONObject().put("property", config.vitalsMeasuredAtProperty).put("date", JSONObject().put("before", windowEnd)))
                     )
                 )
                 .put("page_size", 100)
@@ -922,18 +921,18 @@ private class NotionClient(private val config: SyncConfig) {
         return measurements.sortedBy { it.measuredAt }
     }
 
-    private fun latestDateOnYesterday(dataSourceId: String, dateProperty: String): NotionDateValue? {
+    private fun latestDateInSyncWindow(dataSourceId: String, dateProperty: String, lookbackDays: Long): NotionDateValue? {
         val zone = ZoneId.systemDefault()
         val today = LocalDate.now(zone)
-        val yesterdayStart = today.minusDays(1).atStartOfDay(zone).toInstant().toNotionDateTime()
-        val todayStart = today.atStartOfDay(zone).toInstant().toNotionDateTime()
+        val windowStart = today.minusDays(lookbackDays).atStartOfDay(zone).toInstant().toNotionDateTime()
+        val windowEnd = today.plusDays(1).atStartOfDay(zone).toInstant().toNotionDateTime()
         val body = JSONObject()
             .put(
                 "filter",
                 JSONObject()
                     .put("and", JSONArray()
-                        .put(JSONObject().put("property", dateProperty).put("date", JSONObject().put("on_or_after", yesterdayStart)))
-                        .put(JSONObject().put("property", dateProperty).put("date", JSONObject().put("before", todayStart)))
+                        .put(JSONObject().put("property", dateProperty).put("date", JSONObject().put("on_or_after", windowStart)))
+                        .put(JSONObject().put("property", dateProperty).put("date", JSONObject().put("before", windowEnd)))
                     )
             )
             .put(
@@ -946,19 +945,14 @@ private class NotionClient(private val config: SyncConfig) {
             )
             .put("page_size", 1)
         val response = request("POST", "https://api.notion.com/v1/data_sources/$dataSourceId/query", body)
-        val start = response.optJSONArray("results")
+        val latestStart = response.optJSONArray("results")
             ?.optJSONObject(0)
             ?.optJSONObject("properties")
             ?.optJSONObject(dateProperty)
             ?.optJSONObject("date")
             ?.optString("start")
             ?.takeIf { it.isNotBlank() }
-        return start?.let {
-            NotionDateValue(
-                date = LocalDate.parse(it.take(10)),
-                timestamp = runCatching { Instant.parse(it) }.getOrNull()
-            )
-        }
+        return latestStart?.toNotionDateValue()
     }
 
     private fun readDateTimes(
@@ -1008,7 +1002,6 @@ private class NotionClient(private val config: SyncConfig) {
 
         return times
     }
-
 
     private fun JSONObject.toVitalMeasurement(): VitalMeasurement? {
         val properties = optJSONObject("properties") ?: return null
@@ -1074,7 +1067,12 @@ private fun JSONObject.notionNumber(property: String): Double? =
 private fun Instant.toNotionDateTime(): String =
     DateTimeFormatter.ISO_OFFSET_DATE_TIME.format(atZone(ZoneId.systemDefault()))
 
-private val DISPLAY_DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd")
+private fun String.toNotionDateValue(): NotionDateValue =
+    NotionDateValue(
+        date = LocalDate.parse(take(10)),
+        timestamp = runCatching { Instant.parse(this) }.getOrNull()
+    )
+
 private val DISPLAY_DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
 
 private val DATA_SOURCE_ID_PATTERN = Regex("^[A-Za-z0-9-]{16,128}$")
