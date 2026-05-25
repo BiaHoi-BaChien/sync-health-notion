@@ -4,10 +4,10 @@ Android app for Pixel devices that syncs step and vital data between Health Conn
 
 ## Current scope
 
-- Reads step counts from Health Connect and writes them to Notion.
+- Reads Health Connect step records and writes each record to Notion.
 - Reads blood pressure and heart rate values from Notion and writes them to Health Connect.
+- Keeps Notion step rows aligned with Health Connect record granularity instead of aggregating one row per day.
 - Includes today's step and vital data in sync.
-- Stores step timestamps so same-day step changes are judged by time before Notion rows are updated.
 - Shows the latest phone-side and Notion-side timestamps for step and vital data on the top page.
 - Syncs only when the user taps `歩数データを同期`, `血圧・心拍データを同期`, or `すべて同期`.
 - Stores the Notion integration token locally using Android Keystore-backed encryption.
@@ -20,6 +20,8 @@ The step data source must have:
 
 - A date property with time enabled, default name: `Date`
 - A number property, default name: `Steps`
+
+Step sync uses the step record start time in the date property to decide whether the same Health Connect record already exists in Notion.
 
 The blood pressure data source must have:
 
