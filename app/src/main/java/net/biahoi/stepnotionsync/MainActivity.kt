@@ -132,7 +132,7 @@ class MainActivity : ComponentActivity() {
         root.addView(header)
 
         root.addView(TextView(this).apply {
-            text = "スマホとNotionの昨日の最新データ日時"
+            text = "スマホとNotionの最新データ日時"
             textSize = 14f
             setTextColor(Color.parseColor("#AAB7C4"))
             setPadding(0, (4 * density).toInt(), 0, (16 * density).toInt())
