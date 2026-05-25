@@ -27,6 +27,7 @@ import androidx.health.connect.client.records.BloodPressureRecord
 import androidx.health.connect.client.records.HeartRateRecord
 import androidx.health.connect.client.records.StepsRecord
 import androidx.health.connect.client.records.metadata.Metadata
+import androidx.health.connect.client.request.AggregateGroupByPeriodRequest
 import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
 import androidx.health.connect.client.units.Pressure
@@ -46,6 +47,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.time.Instant
 import java.time.LocalDate
+import java.time.Period
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import kotlin.coroutines.coroutineContext
@@ -688,26 +690,46 @@ class MainActivity : ComponentActivity() {
     private suspend fun readDailyStepMeasurements(client: HealthConnectClient): List<DailyStepMeasurement> {
         val zone = ZoneId.systemDefault()
         val today = LocalDate.now(zone)
-        val start = today.minusDays(lookbackDays).atStartOfDay(zone).toInstant()
-        val end = today.plusDays(1).atStartOfDay(zone).toInstant()
-        return client.readRecords(
+        val startDate = today.minusDays(lookbackDays)
+        val endDate = today.plusDays(1)
+        val timeRange = TimeRangeFilter.between(
+            startDate.atStartOfDay(zone).toInstant(),
+            endDate.atStartOfDay(zone).toInstant()
+        )
+
+        val latestRecordTimeByDate = client.readRecords(
             ReadRecordsRequest(
                 recordType = StepsRecord::class,
-                timeRangeFilter = TimeRangeFilter.between(start, end),
+                timeRangeFilter = timeRange,
                 ascendingOrder = true,
                 pageSize = 5000
             )
         ).records
             .filter { it.count > 0L }
             .groupBy { it.endTime.atZone(zone).toLocalDate() }
-            .map { (date, records) ->
-                DailyStepMeasurement(
-                    date = date,
-                    recordedAt = records.maxOf { it.endTime },
-                    steps = records.sumOf { it.count }
-                )
+            .mapValues { (_, records) -> records.maxOf { it.endTime } }
+
+        val aggregatedByDay = client.aggregateGroupByPeriod(
+            AggregateGroupByPeriodRequest(
+                metrics = setOf(StepsRecord.COUNT_TOTAL),
+                timeRangeFilter = timeRange,
+                timeRangeSlicer = Period.ofDays(1)
+            )
+        )
+
+        return aggregatedByDay.mapNotNull { bucket ->
+            val steps = bucket.result[StepsRecord.COUNT_TOTAL] ?: return@mapNotNull null
+            if (steps <= 0L) {
+                return@mapNotNull null
             }
-            .sortedBy { it.date }
+            val date = bucket.startTime.atZone(zone).toLocalDate()
+            val recordedAt = latestRecordTimeByDate[date] ?: bucket.endTime
+            DailyStepMeasurement(
+                date = date,
+                recordedAt = recordedAt,
+                steps = steps
+            )
+        }.sortedBy { it.date }
     }
 
     private suspend fun readLatestStepsTime(client: HealthConnectClient, timeRange: TimeRangeFilter): Instant? {
