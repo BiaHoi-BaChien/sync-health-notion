@@ -153,7 +153,7 @@ class MainActivity : ComponentActivity() {
         root.addButton("最新日付を更新") { refreshLatestDates() }
 
         statusText = TextView(this).apply {
-            text = "設定後に同期してください。歩数データはHealth Connectの記録単位でNotionへ同期します。"
+            text = "設定後に同期してください。歩数データは1日単位で合算してNotionへ同期します。"
             textSize = 16f
             setTextColor(Color.parseColor("#D9E3EA"))
             setPadding(0, (14 * density).toInt(), 0, 0)
@@ -653,13 +653,18 @@ class MainActivity : ComponentActivity() {
 
     private suspend fun syncUnsyncedSteps(client: HealthConnectClient, config: SyncConfig): Int {
         val notion = NotionClient(config)
-        val existingTimes = notion.readStepTimes(lookbackDays).toMutableSet()
+        val existingPages = notion.readStepPagesByDate(lookbackDays).toMutableMap()
         var synced = 0
-        for (steps in readStepRecords(client)) {
+        for (steps in readDailyStepMeasurements(client)) {
             coroutineContext.ensureActive()
-            if (steps.recordedAt !in existingTimes) {
+            val existingPage = existingPages[steps.date]
+            if (existingPage == null) {
                 notion.createStepPage(steps)
-                existingTimes.add(steps.recordedAt)
+                existingPages[steps.date] = NotionStepPage(id = "", recordedAt = steps.recordedAt)
+                synced++
+            } else if (existingPage.recordedAt != steps.recordedAt) {
+                notion.updateStepPage(existingPage.id, steps)
+                existingPages[steps.date] = existingPage.copy(recordedAt = steps.recordedAt)
                 synced++
             }
         }
@@ -680,7 +685,7 @@ class MainActivity : ComponentActivity() {
         return measurementsToInsert.size
     }
 
-    private suspend fun readStepRecords(client: HealthConnectClient): List<StepMeasurement> {
+    private suspend fun readDailyStepMeasurements(client: HealthConnectClient): List<DailyStepMeasurement> {
         val zone = ZoneId.systemDefault()
         val today = LocalDate.now(zone)
         val start = today.minusDays(lookbackDays).atStartOfDay(zone).toInstant()
@@ -694,7 +699,15 @@ class MainActivity : ComponentActivity() {
             )
         ).records
             .filter { it.count > 0L }
-            .map { StepMeasurement(recordedAt = it.startTime, steps = it.count) }
+            .groupBy { it.endTime.atZone(zone).toLocalDate() }
+            .map { (date, records) ->
+                DailyStepMeasurement(
+                    date = date,
+                    recordedAt = records.maxOf { it.endTime },
+                    steps = records.sumOf { it.count }
+                )
+            }
+            .sortedBy { it.date }
     }
 
     private suspend fun readLatestStepsTime(client: HealthConnectClient, timeRange: TimeRangeFilter): Instant? {
@@ -813,7 +826,16 @@ private data class SyncConfig(
             heartRateProperty.isNotBlank()
 }
 
-private data class StepMeasurement(val recordedAt: Instant, val steps: Long)
+private data class DailyStepMeasurement(
+    val date: LocalDate,
+    val recordedAt: Instant,
+    val steps: Long
+)
+
+private data class NotionStepPage(
+    val id: String,
+    val recordedAt: Instant?
+)
 
 private data class NotionDateValue(
     val date: LocalDate,
@@ -861,25 +883,38 @@ private class NotionClient(private val config: SyncConfig) {
     fun latestVitalsDate(lookbackDays: Long): NotionDateValue? =
         latestDateInSyncWindow(validDataSourceId(config.vitalsDataSourceId), config.vitalsMeasuredAtProperty, lookbackDays)
 
-    fun readStepTimes(lookbackDays: Long): Set<Instant> {
-        return readDateTimes(
+    fun readStepPagesByDate(lookbackDays: Long): Map<LocalDate, NotionStepPage> {
+        return readDatePagesByDate(
             dataSourceId = validDataSourceId(config.stepsDataSourceId),
             dateProperty = config.stepsDateProperty,
-            lookbackDays = lookbackDays,
-            includeToday = true
+            lookbackDays = lookbackDays
         )
     }
 
-    fun createStepPage(steps: StepMeasurement) {
+    fun createStepPage(steps: DailyStepMeasurement) {
         val body = JSONObject()
             .put("parent", dataSourceParent(validDataSourceId(config.stepsDataSourceId)))
-            .put(
-                "properties",
-                JSONObject()
-                    .put(config.stepsDateProperty, JSONObject().put("date", JSONObject().put("start", steps.recordedAt.toNotionDateTime())))
-                    .put(config.stepsProperty, JSONObject().put("number", steps.steps))
-            )
+            .put("properties", stepProperties(steps))
         request("POST", "https://api.notion.com/v1/pages", body)
+    }
+
+    fun updateStepPage(pageId: String, steps: DailyStepMeasurement) {
+        if (pageId.isBlank()) {
+            createStepPage(steps)
+            return
+        }
+        val body = JSONObject()
+            .put("properties", stepProperties(steps))
+        request("PATCH", "https://api.notion.com/v1/pages/$pageId", body)
+    }
+
+    private fun stepProperties(steps: DailyStepMeasurement): JSONObject {
+        return JSONObject()
+            .put(
+                config.stepsDateProperty,
+                JSONObject().put("date", JSONObject().put("start", steps.recordedAt.toNotionDateTime()))
+            )
+            .put(config.stepsProperty, JSONObject().put("number", steps.steps))
     }
 
     fun readVitalMeasurements(lookbackDays: Long): List<VitalMeasurement> {
@@ -955,18 +990,16 @@ private class NotionClient(private val config: SyncConfig) {
         return latestStart?.toNotionDateValue()
     }
 
-    private fun readDateTimes(
+    private fun readDatePagesByDate(
         dataSourceId: String,
         dateProperty: String,
-        lookbackDays: Long,
-        includeToday: Boolean
-    ): Set<Instant> {
+        lookbackDays: Long
+    ): Map<LocalDate, NotionStepPage> {
         val zone = ZoneId.systemDefault()
         val today = LocalDate.now(zone)
         val start = today.minusDays(lookbackDays).atStartOfDay(zone).toInstant().toNotionDateTime()
-        val endDate = if (includeToday) today.plusDays(1) else today
-        val end = endDate.atStartOfDay(zone).toInstant().toNotionDateTime()
-        val times = mutableSetOf<Instant>()
+        val end = today.plusDays(1).atStartOfDay(zone).toInstant().toNotionDateTime()
+        val pages = mutableMapOf<LocalDate, NotionStepPage>()
         var cursor: String? = null
 
         do {
@@ -986,21 +1019,27 @@ private class NotionClient(private val config: SyncConfig) {
             val response = request("POST", "https://api.notion.com/v1/data_sources/$dataSourceId/query", body)
             val results = response.optJSONArray("results") ?: JSONArray()
             for (i in 0 until results.length()) {
-                results.optJSONObject(i)
+                val page = results.optJSONObject(i) ?: continue
+                val value = page
                     ?.optJSONObject("properties")
                     ?.optJSONObject(dateProperty)
                     ?.optJSONObject("date")
                     ?.optString("start")
                     ?.takeIf { it.isNotBlank() }
-                    ?.let { runCatching { Instant.parse(it) }.getOrNull() }
-                    ?.let { times.add(it) }
+                    ?.toNotionDateValue()
+                    ?: continue
+                val pageId = page.optString("id").takeIf { it.isNotBlank() } ?: continue
+                val existing = pages[value.date]
+                if (existing == null || notionTimestampSortValue(existing.recordedAt) < notionTimestampSortValue(value.timestamp)) {
+                    pages[value.date] = NotionStepPage(id = pageId, recordedAt = value.timestamp)
+                }
             }
             cursor = response.optString("next_cursor").takeIf {
                 response.optBoolean("has_more") && it.isNotBlank()
             }
         } while (cursor != null)
 
-        return times
+        return pages
     }
 
     private fun JSONObject.toVitalMeasurement(): VitalMeasurement? {
@@ -1072,6 +1111,9 @@ private fun String.toNotionDateValue(): NotionDateValue =
         date = LocalDate.parse(take(10)),
         timestamp = runCatching { Instant.parse(this) }.getOrNull()
     )
+
+private fun notionTimestampSortValue(timestamp: Instant?): Instant =
+    timestamp ?: Instant.EPOCH
 
 private val DISPLAY_DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
 
