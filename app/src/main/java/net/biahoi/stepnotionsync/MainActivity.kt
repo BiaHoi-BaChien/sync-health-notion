@@ -26,6 +26,7 @@ import androidx.health.connect.client.permission.HealthPermission
 import androidx.health.connect.client.records.BloodPressureRecord
 import androidx.health.connect.client.records.HeartRateRecord
 import androidx.health.connect.client.records.StepsRecord
+import androidx.health.connect.client.records.metadata.DataOrigin
 import androidx.health.connect.client.records.metadata.Metadata
 import androidx.health.connect.client.request.AggregateGroupByPeriodRequest
 import androidx.health.connect.client.request.ReadRecordsRequest
@@ -35,8 +36,10 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -51,6 +54,7 @@ import java.time.Period
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import kotlin.coroutines.coroutineContext
+import kotlin.coroutines.resume
 
 class MainActivity : ComponentActivity() {
     private val requiredPermissions = setOf(
@@ -78,6 +82,7 @@ class MainActivity : ComponentActivity() {
     private var currentSyncJob: Job? = null
     private var syncDialog: Dialog? = null
     private var syncDialogMessageText: TextView? = null
+    private var messageDialog: Dialog? = null
     private val lookbackDays = 30L
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -85,11 +90,12 @@ class MainActivity : ComponentActivity() {
         permissionLauncher = registerForActivityResult(
             PermissionController.createRequestPermissionResultContract()
         ) { granted ->
-            statusText.text = if (granted.containsAll(requiredPermissions)) {
+            val message = if (granted.containsAll(requiredPermissions)) {
                 "Health Connectの権限が許可されました。"
             } else {
                 "最新日付の表示にはHealth Connectの歩数、血圧、心拍の読み取り権限が必要です。"
             }
+            setStatusMessage(message, floating = true)
             refreshLatestDates()
         }
         showTopPage()
@@ -201,7 +207,7 @@ class MainActivity : ComponentActivity() {
 
         root.addButton("設定を保存") {
             saveSettings()
-            statusText.text = "設定を保存しました。"
+            setStatusMessage("設定を保存しました。", floating = true)
         }
         root.addButton("TOPへ戻る") { showTopPage() }
 
@@ -403,12 +409,15 @@ class MainActivity : ComponentActivity() {
         CoroutineScope(Dispatchers.Main).launch {
             val client = healthConnectClientOrNull()
             if (client == null) {
-                statusText.text = "Health Connectが利用できません。Pixelの設定でHealth Connectを確認してください。"
+                setStatusMessage(
+                    "Health Connectが利用できません。Pixelの設定でHealth Connectを確認してください。",
+                    floating = true
+                )
                 return@launch
             }
             val granted = client.permissionController.getGrantedPermissions()
             if (granted.containsAll(requiredPermissions)) {
-                statusText.text = "Health Connectの権限は許可済みです。"
+                setStatusMessage("Health Connectの権限は許可済みです。", floating = true)
                 refreshLatestDates()
             } else {
                 permissionLauncher.launch(requiredPermissions)
@@ -463,7 +472,7 @@ class MainActivity : ComponentActivity() {
     private fun syncStepsToNotion() {
         val config = currentConfig()
         if (!config.hasStepsSettings()) {
-            statusText.text = "歩数データのNotion設定を入力してください。"
+            setStatusMessage("歩数データのNotion設定を入力してください。", floating = true)
             return
         }
 
@@ -476,10 +485,72 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun syncStepsToNotionDebug() {
+        val config = currentConfig()
+        if (!config.hasStepsSettings()) {
+            setStatusMessage("歩数データのNotion設定を入力してください。", floating = true)
+            return
+        }
+        if (currentSyncJob?.isActive == true) {
+            return
+        }
+
+        val syncMessage = "歩数データをデバッグ同期中..."
+        setStatusMessage(syncMessage)
+        showSyncDialog(syncMessage)
+        currentSyncJob = CoroutineScope(Dispatchers.Main).launch {
+            var synced = 0
+            try {
+                val client = checkedHealthClient() ?: return@launch
+                val notion = withContext(Dispatchers.IO) { NotionClient(config) }
+                val existingPages = withContext(Dispatchers.IO) {
+                    notion.readStepPagesByDate(lookbackDays).toMutableMap()
+                }
+                val measurements = withContext(Dispatchers.IO) {
+                    readDailyStepDebugMeasurements(client)
+                }
+                if (measurements.isEmpty()) {
+                    setStatusMessage("同期対象の歩数データはありません。", floating = true)
+                    return@launch
+                }
+
+                for ((index, debugMeasurement) in measurements.withIndex()) {
+                    coroutineContext.ensureActive()
+                    val result = withContext(Dispatchers.IO) {
+                        syncOneDebugStepDay(notion, existingPages, debugMeasurement)
+                    }
+                    if (result.synced) {
+                        synced++
+                    }
+                    dismissSyncDialog()
+                    setStatusMessage("${result.measurement.date} の歩数データを確認中...")
+                    val shouldContinue = showStepDebugDialog(result)
+                    if (!shouldContinue) {
+                        setStatusMessage("歩数データのデバッグ同期を終了しました。同期済み: ${synced}件", floating = true)
+                        return@launch
+                    }
+                    if (index < measurements.lastIndex) {
+                        showSyncDialog("次の日の歩数データをデバッグ同期中...")
+                    }
+                }
+
+                setStatusMessage("歩数データのデバッグ同期が完了しました。同期済み: ${synced}件", floating = true)
+                refreshLatestDates()
+            } catch (_: CancellationException) {
+                setStatusMessage("同期を中止しました。", floating = true)
+            } catch (e: Exception) {
+                setStatusMessage("歩数データのデバッグ同期に失敗しました: ${safeErrorMessage(e)}", floating = true)
+            } finally {
+                currentSyncJob = null
+                dismissSyncDialog()
+            }
+        }
+    }
+
     private fun syncVitalsToNotion() {
         val config = currentConfig()
         if (!config.hasVitalsSettings()) {
-            statusText.text = "血圧・心拍データのNotion設定を入力してください。"
+            setStatusMessage("血圧・心拍データのNotion設定を入力してください。", floating = true)
             return
         }
 
@@ -495,7 +566,7 @@ class MainActivity : ComponentActivity() {
     private fun syncAllToNotion() {
         val config = currentConfig()
         if (!config.hasStepsSettings() || !config.hasVitalsSettings()) {
-            statusText.text = "歩数と血圧・心拍データのNotion設定を入力してください。"
+            setStatusMessage("歩数と血圧・心拍データのNotion設定を入力してください。", floating = true)
             return
         }
 
@@ -518,18 +589,18 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        statusText.text = syncMessage
+        setStatusMessage(syncMessage)
         showSyncDialog(syncMessage)
         currentSyncJob = CoroutineScope(Dispatchers.Main).launch {
             try {
                 val client = checkedHealthClient() ?: return@launch
                 val resultMessage = withContext(Dispatchers.IO) { sync(client) }
-                statusText.text = resultMessage
+                setStatusMessage(resultMessage, floating = true)
                 refreshLatestDates()
             } catch (_: CancellationException) {
-                statusText.text = "同期を中止しました。"
+                setStatusMessage("同期を中止しました。", floating = true)
             } catch (e: Exception) {
-                statusText.text = "$failurePrefix: ${safeErrorMessage(e)}"
+                setStatusMessage("$failurePrefix: ${safeErrorMessage(e)}", floating = true)
             } finally {
                 currentSyncJob = null
                 dismissSyncDialog()
@@ -618,6 +689,235 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun showFloatingMessage(message: String) {
+        messageDialog?.dismiss()
+
+        val density = resources.displayMetrics.density
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(
+                (20 * density).toInt(),
+                (18 * density).toInt(),
+                (20 * density).toInt(),
+                (18 * density).toInt()
+            )
+            background = GradientDrawable().apply {
+                cornerRadius = 14 * density
+                setColor(Color.parseColor("#17232D"))
+                setStroke((1 * density).toInt(), Color.parseColor("#44D7B6"))
+            }
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER
+            ).apply {
+                leftMargin = (28 * density).toInt()
+                rightMargin = (28 * density).toInt()
+            }
+        }
+        panel.addView(TextView(this).apply {
+            text = message
+            textSize = 20f
+            setTextColor(Color.WHITE)
+            typeface = Typeface.DEFAULT_BOLD
+        })
+
+        val dialog = Dialog(this).apply {
+            requestWindowFeature(Window.FEATURE_NO_TITLE)
+            setCancelable(true)
+            setCanceledOnTouchOutside(true)
+            setContentView(FrameLayout(this@MainActivity).apply {
+                addView(panel)
+            })
+            window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            window?.setDimAmount(0.42f)
+            setOnDismissListener {
+                if (messageDialog === this) {
+                    messageDialog = null
+                }
+            }
+            show()
+            window?.setLayout(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        }
+        messageDialog = dialog
+
+        CoroutineScope(Dispatchers.Main).launch {
+            delay(1600)
+            if (messageDialog === dialog) {
+                dialog.dismiss()
+            }
+        }
+    }
+
+    private suspend fun showStepDebugDialog(result: StepDebugSyncResult): Boolean =
+        suspendCancellableCoroutine { continuation ->
+            messageDialog?.dismiss()
+
+            val density = resources.displayMetrics.density
+            lateinit var dialog: Dialog
+            val panel = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(
+                    (20 * density).toInt(),
+                    (20 * density).toInt(),
+                    (20 * density).toInt(),
+                    (18 * density).toInt()
+                )
+                background = GradientDrawable().apply {
+                    cornerRadius = 14 * density
+                    setColor(Color.parseColor("#17232D"))
+                    setStroke((1 * density).toInt(), Color.parseColor("#44D7B6"))
+                }
+                layoutParams = FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    Gravity.CENTER
+                ).apply {
+                    leftMargin = (24 * density).toInt()
+                    rightMargin = (24 * density).toInt()
+                    topMargin = (42 * density).toInt()
+                    bottomMargin = (42 * density).toInt()
+                }
+            }
+            panel.addView(TextView(this).apply {
+                text = "歩数データ同期デバッグ"
+                textSize = 20f
+                setTextColor(Color.WHITE)
+                typeface = Typeface.DEFAULT_BOLD
+            })
+            panel.addView(ScrollView(this).apply {
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    0,
+                    1f
+                ).apply {
+                    topMargin = (14 * density).toInt()
+                    bottomMargin = (16 * density).toInt()
+                }
+                addView(TextView(this@MainActivity).apply {
+                    text = result.toDebugText()
+                    textSize = 15f
+                    setTextColor(Color.parseColor("#D9E3EA"))
+                    setLineSpacing(0f, 1.12f)
+                })
+            })
+
+            val buttons = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            buttons.addView(Button(this).apply {
+                text = "終了"
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    rightMargin = (8 * density).toInt()
+                }
+                setOnClickListener {
+                    if (continuation.isActive) {
+                        continuation.resume(false)
+                    }
+                    dialog.dismiss()
+                }
+            })
+            buttons.addView(Button(this).apply {
+                text = "再開"
+                typeface = Typeface.DEFAULT_BOLD
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    leftMargin = (8 * density).toInt()
+                }
+                setOnClickListener {
+                    if (continuation.isActive) {
+                        continuation.resume(true)
+                    }
+                    dialog.dismiss()
+                }
+            })
+            panel.addView(buttons)
+
+            dialog = Dialog(this).apply {
+                requestWindowFeature(Window.FEATURE_NO_TITLE)
+                setCancelable(false)
+                setCanceledOnTouchOutside(false)
+                setContentView(FrameLayout(this@MainActivity).apply {
+                    addView(panel)
+                })
+                window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+                window?.setDimAmount(0.64f)
+                setOnDismissListener {
+                    if (messageDialog === this) {
+                        messageDialog = null
+                    }
+                }
+                show()
+                window?.setLayout(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                )
+            }
+            messageDialog = dialog
+            continuation.invokeOnCancellation {
+                dialog.dismiss()
+                if (messageDialog === dialog) {
+                    messageDialog = null
+                }
+            }
+        }
+
+    private fun setStatusMessage(message: String, floating: Boolean = false) {
+        statusText.text = message
+        if (floating) {
+            showFloatingMessage(message)
+        }
+    }
+
+    private fun StepDebugSyncResult.toDebugText(): String {
+        val rawTotal = details.sumOf { it.steps }
+        val lines = mutableListOf<String>()
+        lines.add("対象日: ${measurement.date}")
+        lines.add("Notion同期結果: ${operation.label}")
+        lines.add("集計対象origin: $GOOGLE_FIT_PACKAGE_NAME")
+        lines.add("Notionへ送信した合計歩数: ${measurement.steps}歩")
+        lines.add("GoogleHealth明細の合計歩数: ${rawTotal}歩")
+        if (rawTotal != measurement.steps) {
+            lines.add("差分: ${measurement.steps - rawTotal}歩")
+        }
+        lines.add("Notionへ保存した測定日時: ${displayDateTime(measurement.recordedAt)}")
+        lines.add("")
+        lines.add("dataOrigin.packageName別合計:")
+        details
+            .groupBy { it.dataOriginPackageName }
+            .mapValues { (_, records) -> records.sumOf { it.steps } }
+            .toSortedMap()
+            .forEach { (packageName, steps) ->
+                lines.add("- $packageName: ${steps}歩")
+            }
+        lines.add("")
+        lines.add("recordingMethod別合計:")
+        details
+            .groupBy { it.recordingMethod }
+            .mapValues { (_, records) -> records.sumOf { it.steps } }
+            .toSortedMap()
+            .forEach { (recordingMethod, steps) ->
+                lines.add("- ${recordingMethod.label}: ${steps}歩")
+            }
+        lines.add("")
+        lines.add("GoogleHealth明細: ${details.size}件")
+        if (details.isEmpty()) {
+            lines.add("明細レコードは取得できませんでした。Health Connectの日次集計APIの合計値をNotionへ送信しています。")
+        } else {
+            details.forEachIndexed { index, detail ->
+                lines.add(
+                    "${index + 1}. ${displayDateTime(detail.startTime)} - ${displayDateTime(detail.endTime)} / ${detail.steps}歩 / ${detail.dataOriginPackageName} / ${detail.recordingMethod.label}"
+                )
+            }
+        }
+        lines.add("")
+        lines.add("再開を押すと次の日の同期に進みます。")
+        return lines.joinToString(separator = "\n")
+    }
+
     private fun dismissSyncDialog() {
         syncDialog?.dismiss()
         syncDialog = null
@@ -634,13 +934,13 @@ class MainActivity : ComponentActivity() {
     private suspend fun checkedHealthClient(): HealthConnectClient? {
         val client = healthConnectClientOrNull()
         if (client == null) {
-            statusText.text = "Health Connectが利用できません。"
+            setStatusMessage("Health Connectが利用できません。", floating = true)
             return null
         }
         val granted = client.permissionController.getGrantedPermissions()
         if (!granted.containsAll(requiredPermissions)) {
             permissionLauncher.launch(requiredPermissions)
-            statusText.text = "Health Connectの権限を許可してから再度実行してください。"
+            setStatusMessage("Health Connectの権限を許可してから再度実行してください。", floating = true)
             return null
         }
         return client
@@ -673,6 +973,32 @@ class MainActivity : ComponentActivity() {
         return synced
     }
 
+    private fun syncOneDebugStepDay(
+        notion: NotionClient,
+        existingPages: MutableMap<LocalDate, NotionStepPage>,
+        debugMeasurement: DailyStepDebugMeasurement
+    ): StepDebugSyncResult {
+        val steps = debugMeasurement.measurement
+        val existingPage = existingPages[steps.date]
+        val operation = if (existingPage == null) {
+            notion.createStepPage(steps)
+            existingPages[steps.date] = NotionStepPage(id = "", recordedAt = steps.recordedAt)
+            StepDebugOperation.CREATED
+        } else if (existingPage.recordedAt != steps.recordedAt) {
+            notion.updateStepPage(existingPage.id, steps)
+            existingPages[steps.date] = existingPage.copy(recordedAt = steps.recordedAt)
+            StepDebugOperation.UPDATED
+        } else {
+            StepDebugOperation.SKIPPED
+        }
+
+        return StepDebugSyncResult(
+            measurement = steps,
+            details = debugMeasurement.details,
+            operation = operation
+        )
+    }
+
     private suspend fun syncUnsyncedVitals(client: HealthConnectClient, config: SyncConfig): Int {
         val notion = NotionClient(config)
         val notionMeasurements = notion.readVitalMeasurements(lookbackDays)
@@ -696,11 +1022,16 @@ class MainActivity : ComponentActivity() {
             startDate.atStartOfDay(zone).toInstant(),
             endDate.atStartOfDay(zone).toInstant()
         )
+        val aggregateTimeRange = TimeRangeFilter.between(
+            startDate.atStartOfDay(),
+            endDate.atStartOfDay()
+        )
 
         val latestRecordTimeByDate = client.readRecords(
             ReadRecordsRequest(
                 recordType = StepsRecord::class,
                 timeRangeFilter = timeRange,
+                dataOriginFilter = GOOGLE_FIT_DATA_ORIGIN_FILTER,
                 ascendingOrder = true,
                 pageSize = 5000
             )
@@ -712,8 +1043,9 @@ class MainActivity : ComponentActivity() {
         val aggregatedByDay = client.aggregateGroupByPeriod(
             AggregateGroupByPeriodRequest(
                 metrics = setOf(StepsRecord.COUNT_TOTAL),
-                timeRangeFilter = timeRange,
-                timeRangeSlicer = Period.ofDays(1)
+                timeRangeFilter = aggregateTimeRange,
+                timeRangeSlicer = Period.ofDays(1),
+                dataOriginFilter = GOOGLE_FIT_DATA_ORIGIN_FILTER
             )
         )
 
@@ -723,13 +1055,78 @@ class MainActivity : ComponentActivity() {
                 return@mapNotNull null
             }
             val date = bucket.startTime.atZone(zone).toLocalDate()
-            val recordedAt = latestRecordTimeByDate[date] ?: bucket.endTime
+            val recordedAt = latestRecordTimeByDate[date] ?: bucket.endTime.atZone(zone).toInstant()
             DailyStepMeasurement(
                 date = date,
                 recordedAt = recordedAt,
                 steps = steps
             )
         }.sortedBy { it.date }
+    }
+
+    private suspend fun readDailyStepDebugMeasurements(client: HealthConnectClient): List<DailyStepDebugMeasurement> {
+        val zone = ZoneId.systemDefault()
+        val today = LocalDate.now(zone)
+        val startDate = today.minusDays(lookbackDays)
+        val endDate = today.plusDays(1)
+        val timeRange = TimeRangeFilter.between(
+            startDate.atStartOfDay(zone).toInstant(),
+            endDate.atStartOfDay(zone).toInstant()
+        )
+        val aggregateTimeRange = TimeRangeFilter.between(
+            startDate.atStartOfDay(),
+            endDate.atStartOfDay()
+        )
+
+        val detailsByDate = client.readRecords(
+            ReadRecordsRequest(
+                recordType = StepsRecord::class,
+                timeRangeFilter = timeRange,
+                dataOriginFilter = GOOGLE_FIT_DATA_ORIGIN_FILTER,
+                ascendingOrder = true,
+                pageSize = 5000
+            )
+        ).records
+            .filter { it.count > 0L }
+            .groupBy { it.endTime.atZone(zone).toLocalDate() }
+            .mapValues { (_, records) ->
+                records.map {
+                    StepRecordDetail(
+                        startTime = it.startTime,
+                        endTime = it.endTime,
+                        steps = it.count,
+                        dataOriginPackageName = it.metadata.dataOrigin.packageName,
+                        recordingMethod = it.metadata.recordingMethod
+                    )
+                }
+            }
+
+        val aggregatedByDay = client.aggregateGroupByPeriod(
+            AggregateGroupByPeriodRequest(
+                metrics = setOf(StepsRecord.COUNT_TOTAL),
+                timeRangeFilter = aggregateTimeRange,
+                timeRangeSlicer = Period.ofDays(1),
+                dataOriginFilter = GOOGLE_FIT_DATA_ORIGIN_FILTER
+            )
+        )
+
+        return aggregatedByDay.mapNotNull { bucket ->
+            val steps = bucket.result[StepsRecord.COUNT_TOTAL] ?: return@mapNotNull null
+            if (steps <= 0L) {
+                return@mapNotNull null
+            }
+            val date = bucket.startTime.atZone(zone).toLocalDate()
+            val details = detailsByDate[date].orEmpty()
+            val recordedAt = details.maxOfOrNull { it.endTime } ?: bucket.endTime.atZone(zone).toInstant()
+            DailyStepDebugMeasurement(
+                measurement = DailyStepMeasurement(
+                    date = date,
+                    recordedAt = recordedAt,
+                    steps = steps
+                ),
+                details = details
+            )
+        }.sortedBy { it.measurement.date }
     }
 
     private suspend fun readLatestStepsTime(client: HealthConnectClient, timeRange: TimeRangeFilter): Instant? {
@@ -853,6 +1250,34 @@ private data class DailyStepMeasurement(
     val recordedAt: Instant,
     val steps: Long
 )
+
+private data class DailyStepDebugMeasurement(
+    val measurement: DailyStepMeasurement,
+    val details: List<StepRecordDetail>
+)
+
+private data class StepRecordDetail(
+    val startTime: Instant,
+    val endTime: Instant,
+    val steps: Long,
+    val dataOriginPackageName: String,
+    val recordingMethod: Int
+)
+
+private data class StepDebugSyncResult(
+    val measurement: DailyStepMeasurement,
+    val details: List<StepRecordDetail>,
+    val operation: StepDebugOperation
+) {
+    val synced: Boolean
+        get() = operation != StepDebugOperation.SKIPPED
+}
+
+private enum class StepDebugOperation(val label: String) {
+    CREATED("作成"),
+    UPDATED("更新"),
+    SKIPPED("変更なし")
+}
 
 private data class NotionStepPage(
     val id: String,
@@ -1136,6 +1561,18 @@ private fun String.toNotionDateValue(): NotionDateValue =
 
 private fun notionTimestampSortValue(timestamp: Instant?): Instant =
     timestamp ?: Instant.EPOCH
+
+private const val GOOGLE_FIT_PACKAGE_NAME = "com.google.android.apps.fitness"
+private val GOOGLE_FIT_DATA_ORIGIN_FILTER = setOf(DataOrigin(GOOGLE_FIT_PACKAGE_NAME))
+
+private val Int.label: String
+    get() = when (this) {
+        Metadata.RECORDING_METHOD_ACTIVELY_RECORDED -> "ACTIVELY_RECORDED"
+        Metadata.RECORDING_METHOD_AUTOMATICALLY_RECORDED -> "AUTOMATICALLY_RECORDED"
+        Metadata.RECORDING_METHOD_MANUAL_ENTRY -> "MANUAL_ENTRY"
+        Metadata.RECORDING_METHOD_UNKNOWN -> "UNKNOWN"
+        else -> "UNKNOWN($this)"
+    }
 
 private val DISPLAY_DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
 
