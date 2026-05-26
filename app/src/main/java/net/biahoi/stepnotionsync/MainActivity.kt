@@ -723,7 +723,7 @@ class MainActivity : ComponentActivity() {
                 return@mapNotNull null
             }
             val date = bucket.startTime.atZone(zone).toLocalDate()
-            val recordedAt = latestRecordTimeByDate[date] ?: bucket.endTime
+            val recordedAt = latestRecordTimeByDate[date] ?: bucket.endTime.atZone(zone).toInstant()
             DailyStepMeasurement(
                 date = date,
                 recordedAt = recordedAt,
