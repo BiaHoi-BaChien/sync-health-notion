@@ -25,7 +25,7 @@ Step sync uses the daily latest Health Connect step record time in the date prop
 
 The blood pressure data source must have:
 
-- A date property, default name: `Date`
+- A date property, default name: `日付`
 - A number property, default name: `収縮期`
 - A number property, default name: `拡張期`
 - A number property, default name: `脈拍`

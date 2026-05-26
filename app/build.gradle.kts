@@ -26,7 +26,7 @@ android {
         applicationId = "net.biahoi.stepnotionsync"
         minSdk = 28
         targetSdk = 36
-        versionCode = 1
+        versionCode = 2
         versionName = appVersionName
     }
 

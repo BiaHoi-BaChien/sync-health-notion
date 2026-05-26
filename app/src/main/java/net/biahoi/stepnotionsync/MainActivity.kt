@@ -212,6 +212,12 @@ class MainActivity : ComponentActivity() {
             setTextColor(Color.WHITE)
             typeface = Typeface.DEFAULT_BOLD
         })
+        root.addView(TextView(this).apply {
+            text = "バージョン ${appVersionName()}"
+            textSize = 14f
+            setTextColor(Color.parseColor("#AAB7C4"))
+            setPadding(0, (4 * density).toInt(), 0, (8 * density).toInt())
+        })
 
         tokenInput = root.addInput("Notion Integration Token", password = true)
         root.addSectionTitle("歩数")
@@ -416,7 +422,7 @@ class MainActivity : ComponentActivity() {
         stepsDatePropertyInput.setText(prefs.getString("stepsDateProperty", prefs.getString("dateProperty", "日付")))
         stepsPropertyInput.setText(prefs.getString("stepsProperty", "歩数"))
         vitalsDataSourceInput.setText(prefs.getString("vitalsDataSource", ""))
-        vitalsMeasuredAtPropertyInput.setText(prefs.getString("vitalsMeasuredAtProperty", "Date"))
+        vitalsMeasuredAtPropertyInput.setText(prefs.getString("vitalsMeasuredAtProperty", "日付"))
         systolicPropertyInput.setText(prefs.getString("systolicProperty", "収縮期"))
         diastolicPropertyInput.setText(prefs.getString("diastolicProperty", "拡張期"))
         heartRatePropertyInput.setText(prefs.getString("heartRateProperty", "脈拍"))
@@ -449,7 +455,7 @@ class MainActivity : ComponentActivity() {
             stepsDateProperty = prefs.getString("stepsDateProperty", prefs.getString("dateProperty", "日付")) ?: "日付",
             stepsProperty = prefs.getString("stepsProperty", "歩数") ?: "歩数",
             vitalsDataSourceId = prefs.getString("vitalsDataSource", "") ?: "",
-            vitalsMeasuredAtProperty = prefs.getString("vitalsMeasuredAtProperty", "Date") ?: "Date",
+            vitalsMeasuredAtProperty = prefs.getString("vitalsMeasuredAtProperty", "日付") ?: "日付",
             systolicProperty = prefs.getString("systolicProperty", "収縮期") ?: "収縮期",
             diastolicProperty = prefs.getString("diastolicProperty", "拡張期") ?: "拡張期",
             heartRateProperty = prefs.getString("heartRateProperty", "脈拍") ?: "脈拍"
@@ -1182,6 +1188,9 @@ class MainActivity : ComponentActivity() {
         }
         return value.timestamp?.let { displayDateTime(it) } ?: "${value.date} (日付のみ)"
     }
+
+    private fun appVersionName(): String =
+        packageManager.getPackageInfo(packageName, 0).versionName ?: "unknown"
 
 }
 

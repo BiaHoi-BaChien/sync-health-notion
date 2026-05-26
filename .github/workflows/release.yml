@@ -48,6 +48,9 @@ jobs:
           keyPassword=$RELEASE_KEY_PASSWORD
           EOF
 
+      - name: Make Gradle wrapper executable
+        run: chmod +x gradlew
+
       - name: Build signed release APK
         run: ./gradlew assembleRelease
 
