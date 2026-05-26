@@ -360,13 +360,13 @@ class MainActivity : ComponentActivity() {
         stepsDataSourceInput.setText(
             prefs.getString("stepsDataSource", prefs.getString("dataSource", prefs.getString("database", "")))
         )
-        stepsDatePropertyInput.setText(prefs.getString("stepsDateProperty", prefs.getString("dateProperty", "Date")))
-        stepsPropertyInput.setText(prefs.getString("stepsProperty", "Steps"))
+        stepsDatePropertyInput.setText(prefs.getString("stepsDateProperty", prefs.getString("dateProperty", "日付")))
+        stepsPropertyInput.setText(prefs.getString("stepsProperty", "歩数"))
         vitalsDataSourceInput.setText(prefs.getString("vitalsDataSource", ""))
-        vitalsMeasuredAtPropertyInput.setText(prefs.getString("vitalsMeasuredAtProperty", "Measured At"))
-        systolicPropertyInput.setText(prefs.getString("systolicProperty", "Systolic"))
-        diastolicPropertyInput.setText(prefs.getString("diastolicProperty", "Diastolic"))
-        heartRatePropertyInput.setText(prefs.getString("heartRateProperty", "Heart Rate"))
+        vitalsMeasuredAtPropertyInput.setText(prefs.getString("vitalsMeasuredAtProperty", "Date"))
+        systolicPropertyInput.setText(prefs.getString("systolicProperty", "収縮期"))
+        diastolicPropertyInput.setText(prefs.getString("diastolicProperty", "拡張期"))
+        heartRatePropertyInput.setText(prefs.getString("heartRateProperty", "脈拍"))
     }
 
     private fun saveSettings() {
@@ -389,13 +389,13 @@ class MainActivity : ComponentActivity() {
         return SyncConfig(
             token = SecureSettingsStore.loadToken(prefs),
             stepsDataSourceId = prefs.getString("stepsDataSource", prefs.getString("dataSource", "")) ?: "",
-            stepsDateProperty = prefs.getString("stepsDateProperty", prefs.getString("dateProperty", "Date")) ?: "Date",
-            stepsProperty = prefs.getString("stepsProperty", "Steps") ?: "Steps",
+            stepsDateProperty = prefs.getString("stepsDateProperty", prefs.getString("dateProperty", "日付")) ?: "日付",
+            stepsProperty = prefs.getString("stepsProperty", "歩数") ?: "歩数",
             vitalsDataSourceId = prefs.getString("vitalsDataSource", "") ?: "",
-            vitalsMeasuredAtProperty = prefs.getString("vitalsMeasuredAtProperty", "Measured At") ?: "Measured At",
-            systolicProperty = prefs.getString("systolicProperty", "Systolic") ?: "Systolic",
-            diastolicProperty = prefs.getString("diastolicProperty", "Diastolic") ?: "Diastolic",
-            heartRateProperty = prefs.getString("heartRateProperty", "Heart Rate") ?: "Heart Rate"
+            vitalsMeasuredAtProperty = prefs.getString("vitalsMeasuredAtProperty", "Date") ?: "Date",
+            systolicProperty = prefs.getString("systolicProperty", "収縮期") ?: "収縮期",
+            diastolicProperty = prefs.getString("diastolicProperty", "拡張期") ?: "拡張期",
+            heartRateProperty = prefs.getString("heartRateProperty", "脈拍") ?: "脈拍"
         )
     }
 

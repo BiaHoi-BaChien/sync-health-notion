@@ -18,17 +18,17 @@ Android app for Pixel devices that syncs step and vital data between Health Conn
 
 The step data source must have:
 
-- A date property with time enabled, default name: `Date`
-- A number property, default name: `Steps`
+- A date property with time enabled, default name: `日付`
+- A number property, default name: `歩数`
 
 Step sync uses the daily latest Health Connect step record time in the date property. When that time differs from the Notion row for the same day, the app updates the row with the latest daily total.
 
 The blood pressure data source must have:
 
-- A date property, default name: `Measured At`
-- A number property, default name: `Systolic`
-- A number property, default name: `Diastolic`
-- A number property, default name: `Heart Rate`
+- A date property, default name: `Date`
+- A number property, default name: `収縮期`
+- A number property, default name: `拡張期`
+- A number property, default name: `脈拍`
 
 The parent databases must be shared with the Notion integration. Use data source IDs, not database IDs.
 
