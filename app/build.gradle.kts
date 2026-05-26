@@ -4,7 +4,7 @@ plugins {
 
 import java.util.Properties
 
-val appVersionName = "0.0.1"
+val appVersionName = "0.0.2"
 val releaseKeystorePropertiesFile = rootProject.file("keystore.properties")
 val releaseKeystoreProperties = Properties().apply {
     if (releaseKeystorePropertiesFile.isFile) {
@@ -26,7 +26,7 @@ android {
         applicationId = "net.biahoi.stepnotionsync"
         minSdk = 28
         targetSdk = 36
-        versionCode = 1
+        versionCode = 2
         versionName = appVersionName
     }
 
