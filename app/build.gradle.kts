@@ -2,6 +2,8 @@ plugins {
     id("com.android.application")
 }
 
+val appVersionName = "0.0.1"
+
 android {
     namespace = "net.biahoi.stepnotionsync"
     compileSdk = 37
@@ -11,7 +13,15 @@ android {
         minSdk = 28
         targetSdk = 36
         versionCode = 1
-        versionName = "0.1.0"
+        versionName = appVersionName
+    }
+}
+
+androidComponents {
+    onVariants(selector().withBuildType("release")) { variant ->
+        variant.outputs.forEach { output ->
+            output.outputFileName.set("sync-health-notion-v$appVersionName-release-unsigned.apk")
+        }
     }
 }
 
