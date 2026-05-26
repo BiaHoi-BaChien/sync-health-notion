@@ -17,7 +17,9 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
+import android.widget.Spinner
 import android.widget.TextView
+import android.widget.ArrayAdapter
 import androidx.activity.ComponentActivity
 import androidx.activity.result.ActivityResultLauncher
 import androidx.health.connect.client.HealthConnectClient
@@ -32,6 +34,13 @@ import androidx.health.connect.client.request.AggregateGroupByPeriodRequest
 import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
 import androidx.health.connect.client.units.Pressure
+import androidx.work.Constraints
+import androidx.work.CoroutineWorker
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.WorkManager
+import androidx.work.WorkerParameters
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -50,9 +59,12 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.time.Instant
 import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.LocalTime
 import java.time.Period
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.util.concurrent.TimeUnit
 import kotlin.coroutines.coroutineContext
 import kotlin.coroutines.resume
 
@@ -62,7 +74,8 @@ class MainActivity : ComponentActivity() {
         HealthPermission.getReadPermission(BloodPressureRecord::class),
         HealthPermission.getWritePermission(BloodPressureRecord::class),
         HealthPermission.getReadPermission(HeartRateRecord::class),
-        HealthPermission.getWritePermission(HeartRateRecord::class)
+        HealthPermission.getWritePermission(HeartRateRecord::class),
+        HealthPermission.PERMISSION_READ_HEALTH_DATA_IN_BACKGROUND
     )
     private lateinit var permissionLauncher: ActivityResultLauncher<Set<String>>
     private lateinit var statusText: TextView
@@ -79,11 +92,12 @@ class MainActivity : ComponentActivity() {
     private lateinit var systolicPropertyInput: EditText
     private lateinit var diastolicPropertyInput: EditText
     private lateinit var heartRatePropertyInput: EditText
+    private lateinit var autoSyncSpinner: Spinner
     private var currentSyncJob: Job? = null
     private var syncDialog: Dialog? = null
     private var syncDialogMessageText: TextView? = null
     private var messageDialog: Dialog? = null
-    private val lookbackDays = 30L
+    private val lookbackDays = DEFAULT_LOOKBACK_DAYS
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -153,6 +167,12 @@ class MainActivity : ComponentActivity() {
             vitalsPhoneDateText = section.addDateRow("スマホ側", "送信先")
             vitalsNotionDateText = section.addDateRow("Notion側", "送信元")
         }
+        root.addView(TextView(this).apply {
+            text = "自動同期: ${autoSyncLabel(loadAutoSyncTime())}"
+            textSize = 14f
+            setTextColor(Color.parseColor("#AAB7C4"))
+            setPadding(0, 0, 0, (4 * density).toInt())
+        })
 
         root.addButton("Health Connect権限を許可") { requestHealthPermission() }
         root.addButton("歩数データを同期") { syncStepsToNotion() }
@@ -210,6 +230,8 @@ class MainActivity : ComponentActivity() {
         systolicPropertyInput = root.addInput("最高血圧 property name")
         diastolicPropertyInput = root.addInput("最低血圧 property name")
         heartRatePropertyInput = root.addInput("心拍数 property name")
+        root.addSectionTitle("自動同期")
+        autoSyncSpinner = root.addAutoSyncSpinner()
 
         root.addButton("設定を保存") {
             saveSettings()
@@ -366,6 +388,31 @@ class MainActivity : ComponentActivity() {
         return button
     }
 
+    private fun LinearLayout.addAutoSyncSpinner(): Spinner {
+        val density = resources.displayMetrics.density
+        val choices = autoSyncChoices()
+        val spinner = Spinner(context).apply {
+            adapter = ArrayAdapter(
+                context,
+                android.R.layout.simple_spinner_dropdown_item,
+                choices.map { it.label }
+            )
+            background = GradientDrawable().apply {
+                cornerRadius = 8 * density
+                setColor(Color.parseColor("#F2F7FA"))
+            }
+            layoutParams = ViewGroup.MarginLayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = (6 * density).toInt()
+                bottomMargin = (8 * density).toInt()
+            }
+        }
+        addView(spinner)
+        return spinner
+    }
+
     private fun loadSettings() {
         val prefs = getSharedPreferences("notion", Context.MODE_PRIVATE)
         tokenInput.setText(SecureSettingsStore.loadToken(prefs))
@@ -379,6 +426,8 @@ class MainActivity : ComponentActivity() {
         systolicPropertyInput.setText(prefs.getString("systolicProperty", "収縮期"))
         diastolicPropertyInput.setText(prefs.getString("diastolicProperty", "拡張期"))
         heartRatePropertyInput.setText(prefs.getString("heartRateProperty", "脈拍"))
+        val autoSyncTime = prefs.getString(AUTO_SYNC_TIME_KEY, AUTO_SYNC_OFF) ?: AUTO_SYNC_OFF
+        autoSyncSpinner.setSelection(autoSyncChoices().indexOfFirst { it.value == autoSyncTime }.coerceAtLeast(0))
     }
 
     private fun saveSettings() {
@@ -393,7 +442,9 @@ class MainActivity : ComponentActivity() {
             .putString("systolicProperty", systolicPropertyInput.text.toString().trim())
             .putString("diastolicProperty", diastolicPropertyInput.text.toString().trim())
             .putString("heartRateProperty", heartRatePropertyInput.text.toString().trim())
+            .putString(AUTO_SYNC_TIME_KEY, autoSyncChoices()[autoSyncSpinner.selectedItemPosition].value)
             .apply()
+        scheduleAutoSync(this, loadAutoSyncTime())
     }
 
     private fun currentConfig(): SyncConfig {
@@ -409,6 +460,11 @@ class MainActivity : ComponentActivity() {
             diastolicProperty = prefs.getString("diastolicProperty", "拡張期") ?: "拡張期",
             heartRateProperty = prefs.getString("heartRateProperty", "脈拍") ?: "脈拍"
         )
+    }
+
+    private fun loadAutoSyncTime(): String {
+        return getSharedPreferences("notion", Context.MODE_PRIVATE)
+            .getString(AUTO_SYNC_TIME_KEY, AUTO_SYNC_OFF) ?: AUTO_SYNC_OFF
     }
 
     private fun requestHealthPermission() {
@@ -960,23 +1016,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private suspend fun syncUnsyncedSteps(client: HealthConnectClient, config: SyncConfig): Int {
-        val notion = NotionClient(config)
-        val existingPages = notion.readStepPagesByDate(lookbackDays).toMutableMap()
-        var synced = 0
-        for (steps in readDailyStepMeasurements(client)) {
-            coroutineContext.ensureActive()
-            val existingPage = existingPages[steps.date]
-            if (existingPage == null) {
-                notion.createStepPage(steps)
-                existingPages[steps.date] = NotionStepPage(id = "", recordedAt = steps.recordedAt)
-                synced++
-            } else if (existingPage.recordedAt != steps.recordedAt) {
-                notion.updateStepPage(existingPage.id, steps)
-                existingPages[steps.date] = existingPage.copy(recordedAt = steps.recordedAt)
-                synced++
-            }
-        }
-        return synced
+        return HealthNotionSyncEngine.syncSteps(client, config, lookbackDays)
     }
 
     private fun syncOneDebugStepDay(
@@ -1006,68 +1046,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private suspend fun syncUnsyncedVitals(client: HealthConnectClient, config: SyncConfig): Int {
-        val notion = NotionClient(config)
-        val notionMeasurements = notion.readVitalMeasurements(lookbackDays)
-        val existingTimes = readVitalMeasurementTimes(client)
-        val measurementsToInsert = notionMeasurements.filter { it.measuredAt !in existingTimes }
-        coroutineContext.ensureActive()
-        if (measurementsToInsert.isEmpty()) {
-            return 0
-        }
-
-        client.insertRecords(measurementsToInsert.flatMap { it.toHealthConnectRecords() })
-        return measurementsToInsert.size
-    }
-
-    private suspend fun readDailyStepMeasurements(client: HealthConnectClient): List<DailyStepMeasurement> {
-        val zone = ZoneId.systemDefault()
-        val today = LocalDate.now(zone)
-        val startDate = today.minusDays(lookbackDays)
-        val endDate = today.plusDays(1)
-        val timeRange = TimeRangeFilter.between(
-            startDate.atStartOfDay(zone).toInstant(),
-            endDate.atStartOfDay(zone).toInstant()
-        )
-        val aggregateTimeRange = TimeRangeFilter.between(
-            startDate.atStartOfDay(),
-            endDate.atStartOfDay()
-        )
-
-        val latestRecordTimeByDate = client.readRecords(
-            ReadRecordsRequest(
-                recordType = StepsRecord::class,
-                timeRangeFilter = timeRange,
-                dataOriginFilter = GOOGLE_FIT_DATA_ORIGIN_FILTER,
-                ascendingOrder = true,
-                pageSize = 5000
-            )
-        ).records
-            .filter { it.count > 0L }
-            .groupBy { it.endTime.atZone(zone).toLocalDate() }
-            .mapValues { (_, records) -> records.maxOf { it.endTime } }
-
-        val aggregatedByDay = client.aggregateGroupByPeriod(
-            AggregateGroupByPeriodRequest(
-                metrics = setOf(StepsRecord.COUNT_TOTAL),
-                timeRangeFilter = aggregateTimeRange,
-                timeRangeSlicer = Period.ofDays(1),
-                dataOriginFilter = GOOGLE_FIT_DATA_ORIGIN_FILTER
-            )
-        )
-
-        return aggregatedByDay.mapNotNull { bucket ->
-            val steps = bucket.result[StepsRecord.COUNT_TOTAL] ?: return@mapNotNull null
-            if (steps <= 0L) {
-                return@mapNotNull null
-            }
-            val date = bucket.startTime.atZone(zone).toLocalDate()
-            val recordedAt = latestRecordTimeByDate[date] ?: bucket.endTime.atZone(zone).toInstant()
-            DailyStepMeasurement(
-                date = date,
-                recordedAt = recordedAt,
-                steps = steps
-            )
-        }.sortedBy { it.date }
+        return HealthNotionSyncEngine.syncVitals(client, config, lookbackDays)
     }
 
     private suspend fun readDailyStepDebugMeasurements(client: HealthConnectClient): List<DailyStepDebugMeasurement> {
@@ -1196,19 +1175,6 @@ class MainActivity : ComponentActivity() {
         )
     }
 
-    private suspend fun readVitalMeasurementTimes(client: HealthConnectClient): Set<Instant> {
-        val zone = ZoneId.systemDefault()
-        val today = LocalDate.now()
-        val start = today.minusDays(lookbackDays).atStartOfDay(zone).toInstant()
-        val end = today.plusDays(1).atStartOfDay(zone).toInstant()
-        return client.readRecords(
-            ReadRecordsRequest(
-                recordType = BloodPressureRecord::class,
-                timeRangeFilter = TimeRangeFilter.between(start, end)
-            )
-        ).records.mapTo(mutableSetOf()) { it.time }
-    }
-
     private fun displayDateTime(timestamp: Instant?): String {
         return timestamp
             ?.atZone(ZoneId.systemDefault())
@@ -1252,6 +1218,213 @@ private data class SyncConfig(
             systolicProperty.isNotBlank() &&
             diastolicProperty.isNotBlank() &&
             heartRateProperty.isNotBlank()
+}
+
+private data class AutoSyncChoice(
+    val label: String,
+    val value: String
+)
+
+private fun autoSyncChoices(): List<AutoSyncChoice> {
+    return listOf(AutoSyncChoice("自動同期しない", AUTO_SYNC_OFF)) +
+        (0..23).map { hour ->
+            val time = "%02d:00".format(hour)
+            AutoSyncChoice("毎日 $time", time)
+        }
+}
+
+private fun autoSyncLabel(value: String): String {
+    return autoSyncChoices().firstOrNull { it.value == value }?.label ?: autoSyncChoices().first().label
+}
+
+private fun loadSyncConfig(context: Context): SyncConfig {
+    val prefs = context.getSharedPreferences("notion", Context.MODE_PRIVATE)
+    return SyncConfig(
+        token = SecureSettingsStore.loadToken(prefs),
+        stepsDataSourceId = prefs.getString("stepsDataSource", prefs.getString("dataSource", "")) ?: "",
+        stepsDateProperty = prefs.getString("stepsDateProperty", prefs.getString("dateProperty", "日付")) ?: "日付",
+        stepsProperty = prefs.getString("stepsProperty", "歩数") ?: "歩数",
+        vitalsDataSourceId = prefs.getString("vitalsDataSource", "") ?: "",
+        vitalsMeasuredAtProperty = prefs.getString("vitalsMeasuredAtProperty", "Date") ?: "Date",
+        systolicProperty = prefs.getString("systolicProperty", "収縮期") ?: "収縮期",
+        diastolicProperty = prefs.getString("diastolicProperty", "拡張期") ?: "拡張期",
+        heartRateProperty = prefs.getString("heartRateProperty", "脈拍") ?: "脈拍"
+    )
+}
+
+private fun scheduleAutoSync(context: Context, autoSyncTime: String) {
+    val workManager = WorkManager.getInstance(context.applicationContext)
+    if (autoSyncTime == AUTO_SYNC_OFF) {
+        workManager.cancelUniqueWork(AUTO_SYNC_WORK_NAME)
+        return
+    }
+
+    val request = PeriodicWorkRequestBuilder<AutoSyncWorker>(1, TimeUnit.DAYS)
+        .setInitialDelay(initialAutoSyncDelayMillis(autoSyncTime), TimeUnit.MILLISECONDS)
+        .setConstraints(
+            Constraints.Builder()
+                .setRequiredNetworkType(NetworkType.CONNECTED)
+                .build()
+        )
+        .build()
+    workManager.enqueueUniquePeriodicWork(
+        AUTO_SYNC_WORK_NAME,
+        ExistingPeriodicWorkPolicy.UPDATE,
+        request
+    )
+}
+
+private fun initialAutoSyncDelayMillis(autoSyncTime: String): Long {
+    val targetTime = runCatching { LocalTime.parse(autoSyncTime) }.getOrDefault(LocalTime.MIDNIGHT)
+    val now = LocalDateTime.now()
+    var nextRun = now.toLocalDate().atTime(targetTime)
+    if (!nextRun.isAfter(now)) {
+        nextRun = nextRun.plusDays(1)
+    }
+    return java.time.Duration.between(now, nextRun).toMillis().coerceAtLeast(0L)
+}
+
+class AutoSyncWorker(
+    appContext: Context,
+    workerParams: WorkerParameters
+) : CoroutineWorker(appContext, workerParams) {
+    override suspend fun doWork(): Result {
+        val client = when (HealthConnectClient.getSdkStatus(applicationContext)) {
+            HealthConnectClient.SDK_AVAILABLE -> HealthConnectClient.getOrCreate(applicationContext)
+            else -> return Result.retry()
+        }
+
+        val granted = client.permissionController.getGrantedPermissions()
+        if (!granted.containsAll(AUTO_SYNC_REQUIRED_PERMISSIONS)) {
+            return Result.failure()
+        }
+
+        val config = loadSyncConfig(applicationContext)
+        if (!config.hasStepsSettings() && !config.hasVitalsSettings()) {
+            return Result.failure()
+        }
+
+        return try {
+            HealthNotionSyncEngine.syncConfigured(client, config, DEFAULT_LOOKBACK_DAYS)
+            Result.success()
+        } catch (_: CancellationException) {
+            Result.retry()
+        } catch (_: Exception) {
+            Result.retry()
+        }
+    }
+}
+
+private object HealthNotionSyncEngine {
+    suspend fun syncConfigured(client: HealthConnectClient, config: SyncConfig, lookbackDays: Long): Pair<Int, Int> {
+        val steps = if (config.hasStepsSettings()) syncSteps(client, config, lookbackDays) else 0
+        val vitals = if (config.hasVitalsSettings()) syncVitals(client, config, lookbackDays) else 0
+        return steps to vitals
+    }
+
+    suspend fun syncSteps(client: HealthConnectClient, config: SyncConfig, lookbackDays: Long): Int {
+        val notion = NotionClient(config)
+        val existingPages = notion.readStepPagesByDate(lookbackDays).toMutableMap()
+        var synced = 0
+        for (steps in readDailyStepMeasurements(client, lookbackDays)) {
+            coroutineContext.ensureActive()
+            val existingPage = existingPages[steps.date]
+            if (existingPage == null) {
+                notion.createStepPage(steps)
+                existingPages[steps.date] = NotionStepPage(id = "", recordedAt = steps.recordedAt)
+                synced++
+            } else if (existingPage.recordedAt != steps.recordedAt) {
+                notion.updateStepPage(existingPage.id, steps)
+                existingPages[steps.date] = existingPage.copy(recordedAt = steps.recordedAt)
+                synced++
+            }
+        }
+        return synced
+    }
+
+    suspend fun syncVitals(client: HealthConnectClient, config: SyncConfig, lookbackDays: Long): Int {
+        val notion = NotionClient(config)
+        val notionMeasurements = notion.readVitalMeasurements(lookbackDays)
+        val existingTimes = readVitalMeasurementTimes(client, lookbackDays)
+        val measurementsToInsert = notionMeasurements.filter { it.measuredAt !in existingTimes }
+        coroutineContext.ensureActive()
+        if (measurementsToInsert.isEmpty()) {
+            return 0
+        }
+
+        client.insertRecords(measurementsToInsert.flatMap { it.toHealthConnectRecords() })
+        return measurementsToInsert.size
+    }
+
+    private suspend fun readDailyStepMeasurements(
+        client: HealthConnectClient,
+        lookbackDays: Long
+    ): List<DailyStepMeasurement> {
+        val zone = ZoneId.systemDefault()
+        val today = LocalDate.now(zone)
+        val startDate = today.minusDays(lookbackDays)
+        val endDate = today.plusDays(1)
+        val timeRange = TimeRangeFilter.between(
+            startDate.atStartOfDay(zone).toInstant(),
+            endDate.atStartOfDay(zone).toInstant()
+        )
+        val aggregateTimeRange = TimeRangeFilter.between(
+            startDate.atStartOfDay(),
+            endDate.atStartOfDay()
+        )
+
+        val latestRecordTimeByDate = client.readRecords(
+            ReadRecordsRequest(
+                recordType = StepsRecord::class,
+                timeRangeFilter = timeRange,
+                dataOriginFilter = GOOGLE_FIT_DATA_ORIGIN_FILTER,
+                ascendingOrder = true,
+                pageSize = 5000
+            )
+        ).records
+            .filter { it.count > 0L }
+            .groupBy { it.endTime.atZone(zone).toLocalDate() }
+            .mapValues { (_, records) -> records.maxOf { it.endTime } }
+
+        val aggregatedByDay = client.aggregateGroupByPeriod(
+            AggregateGroupByPeriodRequest(
+                metrics = setOf(StepsRecord.COUNT_TOTAL),
+                timeRangeFilter = aggregateTimeRange,
+                timeRangeSlicer = Period.ofDays(1),
+                dataOriginFilter = GOOGLE_FIT_DATA_ORIGIN_FILTER
+            )
+        )
+
+        return aggregatedByDay.mapNotNull { bucket ->
+            val steps = bucket.result[StepsRecord.COUNT_TOTAL] ?: return@mapNotNull null
+            if (steps <= 0L) {
+                return@mapNotNull null
+            }
+            val date = bucket.startTime.atZone(zone).toLocalDate()
+            val recordedAt = latestRecordTimeByDate[date] ?: bucket.endTime.atZone(zone).toInstant()
+            DailyStepMeasurement(
+                date = date,
+                recordedAt = recordedAt,
+                steps = steps
+            )
+        }.sortedBy { it.date }
+    }
+
+    private suspend fun readVitalMeasurementTimes(
+        client: HealthConnectClient,
+        lookbackDays: Long
+    ): Set<Instant> {
+        val zone = ZoneId.systemDefault()
+        val today = LocalDate.now()
+        val start = today.minusDays(lookbackDays).atStartOfDay(zone).toInstant()
+        val end = today.plusDays(1).atStartOfDay(zone).toInstant()
+        return client.readRecords(
+            ReadRecordsRequest(
+                recordType = BloodPressureRecord::class,
+                timeRangeFilter = TimeRangeFilter.between(start, end)
+            )
+        ).records.mapTo(mutableSetOf()) { it.time }
+    }
 }
 
 private data class DailyStepMeasurement(
@@ -1573,6 +1746,18 @@ private fun notionTimestampSortValue(timestamp: Instant?): Instant =
 
 private const val GOOGLE_FIT_PACKAGE_NAME = "com.google.android.apps.fitness"
 private val GOOGLE_FIT_DATA_ORIGIN_FILTER = setOf(DataOrigin(GOOGLE_FIT_PACKAGE_NAME))
+private const val AUTO_SYNC_WORK_NAME = "health_notion_auto_sync"
+private const val AUTO_SYNC_TIME_KEY = "autoSyncTime"
+private const val AUTO_SYNC_OFF = "off"
+private const val DEFAULT_LOOKBACK_DAYS = 30L
+private val AUTO_SYNC_REQUIRED_PERMISSIONS = setOf(
+    HealthPermission.getReadPermission(StepsRecord::class),
+    HealthPermission.getReadPermission(BloodPressureRecord::class),
+    HealthPermission.getWritePermission(BloodPressureRecord::class),
+    HealthPermission.getReadPermission(HeartRateRecord::class),
+    HealthPermission.getWritePermission(HeartRateRecord::class),
+    HealthPermission.PERMISSION_READ_HEALTH_DATA_IN_BACKGROUND
+)
 
 private val Int.label: String
     get() = when (this) {
