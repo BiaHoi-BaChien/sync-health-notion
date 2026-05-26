@@ -2,7 +2,21 @@ plugins {
     id("com.android.application")
 }
 
+import java.util.Properties
+
 val appVersionName = "0.0.1"
+val releaseKeystorePropertiesFile = rootProject.file("keystore.properties")
+val releaseKeystoreProperties = Properties().apply {
+    if (releaseKeystorePropertiesFile.isFile) {
+        releaseKeystorePropertiesFile.inputStream().use(::load)
+    }
+}
+val hasReleaseSigningConfig = listOf(
+    "storeFile",
+    "storePassword",
+    "keyAlias",
+    "keyPassword",
+).all { releaseKeystoreProperties.getProperty(it)?.isNotBlank() == true }
 
 android {
     namespace = "net.biahoi.stepnotionsync"
@@ -15,12 +29,31 @@ android {
         versionCode = 1
         versionName = appVersionName
     }
+
+    signingConfigs {
+        if (hasReleaseSigningConfig) {
+            create("release") {
+                storeFile = rootProject.file(releaseKeystoreProperties.getProperty("storeFile"))
+                storePassword = releaseKeystoreProperties.getProperty("storePassword")
+                keyAlias = releaseKeystoreProperties.getProperty("keyAlias")
+                keyPassword = releaseKeystoreProperties.getProperty("keyPassword")
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            if (hasReleaseSigningConfig) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+        }
+    }
 }
 
 androidComponents {
     onVariants(selector().withBuildType("release")) { variant ->
         variant.outputs.forEach { output ->
-            output.outputFileName.set("sync-health-notion-v$appVersionName-release-unsigned.apk")
+            output.outputFileName.set("sync-health-notion-v$appVersionName-release.apk")
         }
     }
 }

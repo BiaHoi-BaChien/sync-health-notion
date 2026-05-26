@@ -1,0 +1,85 @@
+name: Build signed APK release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish signed APK
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up JDK
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Restore release signing files
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_BASE64 }}
+          RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_STORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
+        run: |
+          test -n "$RELEASE_KEYSTORE_BASE64"
+          test -n "$RELEASE_STORE_PASSWORD"
+          test -n "$RELEASE_KEY_ALIAS"
+          test -n "$RELEASE_KEY_PASSWORD"
+
+          printf '%s' "$RELEASE_KEYSTORE_BASE64" | base64 --decode > release-key.jks
+          cat > keystore.properties <<EOF
+          storeFile=release-key.jks
+          storePassword=$RELEASE_STORE_PASSWORD
+          keyAlias=$RELEASE_KEY_ALIAS
+          keyPassword=$RELEASE_KEY_PASSWORD
+          EOF
+
+      - name: Build signed release APK
+        run: ./gradlew assembleRelease
+
+      - name: Read release metadata
+        id: metadata
+        run: |
+          version_name="$(sed -nE 's/^val appVersionName = "([^"]+)"/\1/p' app/build.gradle.kts)"
+          short_sha="$(git rev-parse --short HEAD)"
+          tag_name="v${version_name}-${short_sha}"
+          apk_path="$(find app/build/outputs/apk/release -name '*.apk' -print -quit)"
+
+          test -n "$version_name"
+          test -n "$apk_path"
+
+          echo "version_name=$version_name" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$short_sha" >> "$GITHUB_OUTPUT"
+          echo "tag_name=$tag_name" >> "$GITHUB_OUTPUT"
+          echo "apk_path=$apk_path" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ steps.metadata.outputs.tag_name }}
+          VERSION_NAME: ${{ steps.metadata.outputs.version_name }}
+          SHORT_SHA: ${{ steps.metadata.outputs.short_sha }}
+          APK_PATH: ${{ steps.metadata.outputs.apk_path }}
+        run: |
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release upload "$TAG_NAME" "$APK_PATH" --clobber
+          else
+            gh release create "$TAG_NAME" "$APK_PATH" \
+              --target "$GITHUB_SHA" \
+              --title "sync-health-notion $VERSION_NAME ($SHORT_SHA)" \
+              --notes "Automated signed APK build from main commit $GITHUB_SHA."
+          fi

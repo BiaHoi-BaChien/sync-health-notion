@@ -53,6 +53,34 @@ The debug APK is generated at:
 app\build\outputs\apk\debug\app-debug.apk
 ```
 
+Release APK builds use `keystore.properties` and `release-key.jks` when they are present locally:
+
+```properties
+storeFile=release-key.jks
+storePassword=...
+keyAlias=...
+keyPassword=...
+```
+
+`keystore.properties` and `*.jks` are local secret files and must not be committed.
+
+## GitHub release automation
+
+When source is pushed or merged into `main`, GitHub Actions builds a signed release APK and creates a GitHub Release with the APK attached.
+
+Configure these repository secrets before using the workflow:
+
+- `ANDROID_RELEASE_KEYSTORE_BASE64`: Base64-encoded contents of the release keystore.
+- `ANDROID_RELEASE_STORE_PASSWORD`: Keystore password.
+- `ANDROID_RELEASE_KEY_ALIAS`: Release key alias.
+- `ANDROID_RELEASE_KEY_PASSWORD`: Release key password.
+
+To create `ANDROID_RELEASE_KEYSTORE_BASE64` from PowerShell:
+
+```powershell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("release-key.jks"))
+```
+
 ## Install
 
 Enable USB debugging on the Pixel device, then install with Gradle:
