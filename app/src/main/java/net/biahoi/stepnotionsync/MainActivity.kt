@@ -9,6 +9,7 @@ import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.text.InputType
 import android.view.Gravity
+import android.view.View
 import android.view.Window
 import android.view.ViewGroup
 import android.widget.Button
@@ -39,6 +40,7 @@ import androidx.work.CoroutineWorker
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import kotlinx.coroutines.CancellationException
@@ -83,6 +85,13 @@ class MainActivity : ComponentActivity() {
     private lateinit var stepsNotionDateText: TextView
     private lateinit var vitalsPhoneDateText: TextView
     private lateinit var vitalsNotionDateText: TextView
+    private lateinit var autoSyncResultText: TextView
+    private lateinit var autoSyncDetailsToggleButton: Button
+    private lateinit var autoSyncDetailsContainer: LinearLayout
+    private lateinit var autoSyncLastSuccessText: TextView
+    private lateinit var autoSyncLastFailureText: TextView
+    private lateinit var autoSyncFailureReasonText: TextView
+    private lateinit var autoSyncNextRunText: TextView
     private lateinit var tokenInput: EditText
     private lateinit var stepsDataSourceInput: EditText
     private lateinit var stepsDatePropertyInput: EditText
@@ -97,6 +106,7 @@ class MainActivity : ComponentActivity() {
     private var syncDialog: Dialog? = null
     private var syncDialogMessageText: TextView? = null
     private var messageDialog: Dialog? = null
+    private var autoSyncDetailsExpanded = false
     private val lookbackDays = DEFAULT_LOOKBACK_DAYS
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -173,6 +183,19 @@ class MainActivity : ComponentActivity() {
             setTextColor(Color.parseColor("#AAB7C4"))
             setPadding(0, 0, 0, (4 * density).toInt())
         })
+        root.addSummaryCard("自動同期の最終実行結果", "前回の自動同期").also { section ->
+            autoSyncResultText = section.addDateRow("最終結果", "状態")
+            autoSyncDetailsToggleButton = section.addButton(autoSyncDetailsToggleLabel()) { toggleAutoSyncDetails() }
+            autoSyncDetailsContainer = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                visibility = if (autoSyncDetailsExpanded) View.VISIBLE else View.GONE
+            }
+            section.addView(autoSyncDetailsContainer)
+            autoSyncLastSuccessText = autoSyncDetailsContainer.addDateRow("最終成功", "時刻")
+            autoSyncLastFailureText = autoSyncDetailsContainer.addDateRow("最終失敗", "時刻")
+            autoSyncFailureReasonText = autoSyncDetailsContainer.addDateRow("失敗理由", "直近")
+            autoSyncNextRunText = autoSyncDetailsContainer.addDateRow("次回予定", "WorkManager")
+        }
 
         root.addButton("Health Connect権限を許可") { requestHealthPermission() }
         root.addButton("歩数データを同期") { syncStepsToNotion() }
@@ -189,6 +212,7 @@ class MainActivity : ComponentActivity() {
         root.addView(statusText)
 
         setContentView(centeredScrollContent(root, padding))
+        refreshAutoSyncStatus()
         refreshLatestDates()
     }
 
@@ -321,6 +345,7 @@ class MainActivity : ComponentActivity() {
             setTextColor(Color.parseColor("#44D7B6"))
             typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.END
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         }
         row.addView(value)
         addView(row)
@@ -530,6 +555,44 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    private fun refreshAutoSyncStatus() {
+        val autoSyncTime = loadAutoSyncTime()
+        val status = loadAutoSyncStatus(this)
+        autoSyncResultText.text = status.topResultLabel()
+        autoSyncLastSuccessText.text = displayTimestampMillis(status.lastSuccessAtMillis)
+        autoSyncLastFailureText.text = displayTimestampMillis(status.lastFailureAtMillis)
+        autoSyncFailureReasonText.text = status.failureReason.takeIf { it.isNotBlank() } ?: "なし"
+        autoSyncNextRunText.text = if (autoSyncTime == AUTO_SYNC_OFF) {
+            "自動同期しない"
+        } else {
+            "確認中..."
+        }
+        if (autoSyncTime == AUTO_SYNC_OFF) {
+            return
+        }
+
+        CoroutineScope(Dispatchers.Main).launch {
+            val nextRunAtMillis = withContext(Dispatchers.IO) {
+                runCatching {
+                    WorkManager.getInstance(applicationContext)
+                        .getWorkInfosForUniqueWork(AUTO_SYNC_WORK_NAME)
+                        .get()
+                        .nextScheduleTimeMillisOrNull()
+                }.getOrNull()
+            } ?: nextAutoSyncTimeMillis(autoSyncTime)
+            autoSyncNextRunText.text = displayTimestampMillis(nextRunAtMillis)
+        }
+    }
+
+    private fun toggleAutoSyncDetails() {
+        autoSyncDetailsExpanded = !autoSyncDetailsExpanded
+        autoSyncDetailsContainer.visibility = if (autoSyncDetailsExpanded) View.VISIBLE else View.GONE
+        autoSyncDetailsToggleButton.text = autoSyncDetailsToggleLabel()
+    }
+
+    private fun autoSyncDetailsToggleLabel(): String =
+        if (autoSyncDetailsExpanded) "詳細を隠す" else "詳細を表示"
 
     private fun syncStepsToNotion() {
         val config = currentConfig()
@@ -1225,6 +1288,19 @@ private data class AutoSyncChoice(
     val value: String
 )
 
+private data class AutoSyncRunStatus(
+    val resultLabel: String,
+    val lastSuccessAtMillis: Long,
+    val lastFailureAtMillis: Long,
+    val failureReason: String
+) {
+    fun topResultLabel(): String =
+        when (resultLabel) {
+            "成功", "未実行" -> resultLabel
+            else -> "失敗"
+        }
+}
+
 private fun autoSyncChoices(): List<AutoSyncChoice> {
     return listOf(AutoSyncChoice("自動同期しない", AUTO_SYNC_OFF)) +
         (0..23).map { hour ->
@@ -1235,6 +1311,60 @@ private fun autoSyncChoices(): List<AutoSyncChoice> {
 
 private fun autoSyncLabel(value: String): String {
     return autoSyncChoices().firstOrNull { it.value == value }?.label ?: autoSyncChoices().first().label
+}
+
+private fun loadAutoSyncStatus(context: Context): AutoSyncRunStatus {
+    val prefs = context.getSharedPreferences("notion", Context.MODE_PRIVATE)
+    return AutoSyncRunStatus(
+        resultLabel = prefs.getString(AUTO_SYNC_RESULT_KEY, "未実行") ?: "未実行",
+        lastSuccessAtMillis = prefs.getLong(AUTO_SYNC_LAST_SUCCESS_AT_KEY, 0L),
+        lastFailureAtMillis = prefs.getLong(AUTO_SYNC_LAST_FAILURE_AT_KEY, 0L),
+        failureReason = prefs.getString(AUTO_SYNC_FAILURE_REASON_KEY, "") ?: ""
+    )
+}
+
+private fun recordAutoSyncSuccess(context: Context) {
+    context.getSharedPreferences("notion", Context.MODE_PRIVATE)
+        .edit()
+        .putString(AUTO_SYNC_RESULT_KEY, "成功")
+        .putLong(AUTO_SYNC_LAST_SUCCESS_AT_KEY, System.currentTimeMillis())
+        .apply()
+}
+
+private fun recordAutoSyncFailure(context: Context, resultLabel: String, reason: String) {
+    context.getSharedPreferences("notion", Context.MODE_PRIVATE)
+        .edit()
+        .putString(AUTO_SYNC_RESULT_KEY, resultLabel)
+        .putLong(AUTO_SYNC_LAST_FAILURE_AT_KEY, System.currentTimeMillis())
+        .putString(AUTO_SYNC_FAILURE_REASON_KEY, reason.take(200))
+        .apply()
+}
+
+private fun List<WorkInfo>.nextScheduleTimeMillisOrNull(): Long? {
+    return asSequence()
+        .map { it.nextScheduleTimeMillis }
+        .filter { it > 0L }
+        .minOrNull()
+}
+
+private fun nextAutoSyncTimeMillis(autoSyncTime: String): Long {
+    return System.currentTimeMillis() + initialAutoSyncDelayMillis(autoSyncTime)
+}
+
+private fun displayTimestampMillis(timestampMillis: Long): String {
+    if (timestampMillis <= 0L) {
+        return "なし"
+    }
+    return Instant.ofEpochMilli(timestampMillis)
+        .atZone(ZoneId.systemDefault())
+        .format(DISPLAY_DATE_TIME_FORMATTER)
+}
+
+private fun workerErrorMessage(error: Exception): String {
+    return when (error) {
+        is NotionRequestException -> error.userMessage
+        else -> error.message?.takeIf { it.isNotBlank() } ?: error::class.java.simpleName
+    }
 }
 
 private fun loadSyncConfig(context: Context): SyncConfig {
@@ -1291,25 +1421,33 @@ class AutoSyncWorker(
     override suspend fun doWork(): Result {
         val client = when (HealthConnectClient.getSdkStatus(applicationContext)) {
             HealthConnectClient.SDK_AVAILABLE -> HealthConnectClient.getOrCreate(applicationContext)
-            else -> return Result.retry()
+            else -> {
+                recordAutoSyncFailure(applicationContext, "再試行", "Health Connectが利用できません")
+                return Result.retry()
+            }
         }
 
         val granted = client.permissionController.getGrantedPermissions()
         if (!granted.containsAll(AUTO_SYNC_REQUIRED_PERMISSIONS)) {
+            recordAutoSyncFailure(applicationContext, "失敗", "Health Connectの自動同期権限が不足しています")
             return Result.failure()
         }
 
         val config = loadSyncConfig(applicationContext)
         if (!config.hasStepsSettings() && !config.hasVitalsSettings()) {
+            recordAutoSyncFailure(applicationContext, "失敗", "Notion同期設定が未完了です")
             return Result.failure()
         }
 
         return try {
             HealthNotionSyncEngine.syncConfigured(client, config, DEFAULT_LOOKBACK_DAYS)
+            recordAutoSyncSuccess(applicationContext)
             Result.success()
         } catch (_: CancellationException) {
+            recordAutoSyncFailure(applicationContext, "再試行", "自動同期がキャンセルされました")
             Result.retry()
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            recordAutoSyncFailure(applicationContext, "再試行", workerErrorMessage(e))
             Result.retry()
         }
     }
@@ -1749,6 +1887,10 @@ private val GOOGLE_FIT_DATA_ORIGIN_FILTER = setOf(DataOrigin(GOOGLE_FIT_PACKAGE_
 private const val AUTO_SYNC_WORK_NAME = "health_notion_auto_sync"
 private const val AUTO_SYNC_TIME_KEY = "autoSyncTime"
 private const val AUTO_SYNC_OFF = "off"
+private const val AUTO_SYNC_RESULT_KEY = "autoSyncResult"
+private const val AUTO_SYNC_LAST_SUCCESS_AT_KEY = "autoSyncLastSuccessAt"
+private const val AUTO_SYNC_LAST_FAILURE_AT_KEY = "autoSyncLastFailureAt"
+private const val AUTO_SYNC_FAILURE_REASON_KEY = "autoSyncFailureReason"
 private const val DEFAULT_LOOKBACK_DAYS = 30L
 private val AUTO_SYNC_REQUIRED_PERMISSIONS = setOf(
     HealthPermission.getReadPermission(StepsRecord::class),
