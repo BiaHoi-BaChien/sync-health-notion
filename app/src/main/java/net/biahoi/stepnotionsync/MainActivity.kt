@@ -9,6 +9,7 @@ import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.text.InputType
 import android.view.Gravity
+import android.view.View
 import android.view.Window
 import android.view.ViewGroup
 import android.widget.Button
@@ -85,6 +86,8 @@ class MainActivity : ComponentActivity() {
     private lateinit var vitalsPhoneDateText: TextView
     private lateinit var vitalsNotionDateText: TextView
     private lateinit var autoSyncResultText: TextView
+    private lateinit var autoSyncDetailsToggleButton: Button
+    private lateinit var autoSyncDetailsContainer: LinearLayout
     private lateinit var autoSyncLastSuccessText: TextView
     private lateinit var autoSyncLastFailureText: TextView
     private lateinit var autoSyncFailureReasonText: TextView
@@ -103,6 +106,7 @@ class MainActivity : ComponentActivity() {
     private var syncDialog: Dialog? = null
     private var syncDialogMessageText: TextView? = null
     private var messageDialog: Dialog? = null
+    private var autoSyncDetailsExpanded = false
     private val lookbackDays = DEFAULT_LOOKBACK_DAYS
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -179,12 +183,18 @@ class MainActivity : ComponentActivity() {
             setTextColor(Color.parseColor("#AAB7C4"))
             setPadding(0, 0, 0, (4 * density).toInt())
         })
-        root.addSummaryCard("自動同期の最終実行結果", "AutoSyncWorker").also { section ->
+        root.addSummaryCard("自動同期の最終実行結果", "前回の自動同期").also { section ->
             autoSyncResultText = section.addDateRow("最終結果", "状態")
-            autoSyncLastSuccessText = section.addDateRow("最終成功", "時刻")
-            autoSyncLastFailureText = section.addDateRow("最終失敗", "時刻")
-            autoSyncFailureReasonText = section.addDateRow("失敗理由", "直近")
-            autoSyncNextRunText = section.addDateRow("次回予定", "WorkManager")
+            autoSyncDetailsToggleButton = section.addButton(autoSyncDetailsToggleLabel()) { toggleAutoSyncDetails() }
+            autoSyncDetailsContainer = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                visibility = if (autoSyncDetailsExpanded) View.VISIBLE else View.GONE
+            }
+            section.addView(autoSyncDetailsContainer)
+            autoSyncLastSuccessText = autoSyncDetailsContainer.addDateRow("最終成功", "時刻")
+            autoSyncLastFailureText = autoSyncDetailsContainer.addDateRow("最終失敗", "時刻")
+            autoSyncFailureReasonText = autoSyncDetailsContainer.addDateRow("失敗理由", "直近")
+            autoSyncNextRunText = autoSyncDetailsContainer.addDateRow("次回予定", "WorkManager")
         }
 
         root.addButton("Health Connect権限を許可") { requestHealthPermission() }
@@ -549,7 +559,7 @@ class MainActivity : ComponentActivity() {
     private fun refreshAutoSyncStatus() {
         val autoSyncTime = loadAutoSyncTime()
         val status = loadAutoSyncStatus(this)
-        autoSyncResultText.text = status.resultLabel
+        autoSyncResultText.text = status.topResultLabel()
         autoSyncLastSuccessText.text = displayTimestampMillis(status.lastSuccessAtMillis)
         autoSyncLastFailureText.text = displayTimestampMillis(status.lastFailureAtMillis)
         autoSyncFailureReasonText.text = status.failureReason.takeIf { it.isNotBlank() } ?: "なし"
@@ -574,6 +584,15 @@ class MainActivity : ComponentActivity() {
             autoSyncNextRunText.text = displayTimestampMillis(nextRunAtMillis)
         }
     }
+
+    private fun toggleAutoSyncDetails() {
+        autoSyncDetailsExpanded = !autoSyncDetailsExpanded
+        autoSyncDetailsContainer.visibility = if (autoSyncDetailsExpanded) View.VISIBLE else View.GONE
+        autoSyncDetailsToggleButton.text = autoSyncDetailsToggleLabel()
+    }
+
+    private fun autoSyncDetailsToggleLabel(): String =
+        if (autoSyncDetailsExpanded) "詳細を隠す" else "詳細を表示"
 
     private fun syncStepsToNotion() {
         val config = currentConfig()
@@ -1274,7 +1293,13 @@ private data class AutoSyncRunStatus(
     val lastSuccessAtMillis: Long,
     val lastFailureAtMillis: Long,
     val failureReason: String
-)
+) {
+    fun topResultLabel(): String =
+        when (resultLabel) {
+            "成功", "未実行" -> resultLabel
+            else -> "失敗"
+        }
+}
 
 private fun autoSyncChoices(): List<AutoSyncChoice> {
     return listOf(AutoSyncChoice("自動同期しない", AUTO_SYNC_OFF)) +
