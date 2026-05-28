@@ -1,14 +1,19 @@
 package net.biahoi.stepnotionsync
 
+import android.Manifest
+import android.app.Activity
 import android.app.Dialog
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
+import android.speech.RecognizerIntent
 import android.text.InputType
 import android.view.Gravity
 import android.view.MotionEvent
@@ -27,6 +32,8 @@ import android.widget.TextView
 import android.widget.ArrayAdapter
 import androidx.activity.ComponentActivity
 import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.PermissionController
 import androidx.health.connect.client.permission.HealthPermission
@@ -70,6 +77,7 @@ import java.time.LocalTime
 import java.time.Period
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.coroutineContext
 import kotlin.coroutines.resume
@@ -84,6 +92,8 @@ class MainActivity : ComponentActivity() {
         HealthPermission.PERMISSION_READ_HEALTH_DATA_IN_BACKGROUND
     )
     private lateinit var permissionLauncher: ActivityResultLauncher<Set<String>>
+    private lateinit var voicePermissionLauncher: ActivityResultLauncher<String>
+    private lateinit var voiceInputLauncher: ActivityResultLauncher<Intent>
     private lateinit var statusText: TextView
     private lateinit var stepsPhoneDateText: TextView
     private lateinit var stepsNotionDateText: TextView
@@ -113,6 +123,7 @@ class MainActivity : ComponentActivity() {
     private var messageDialog: Dialog? = null
     private var latestDateRefreshDialog: Dialog? = null
     private var autoSyncDetailsExpanded = false
+    private var manualVitalVoiceInputs: ManualVitalVoiceInputs? = null
     private val lookbackDays = DEFAULT_LOOKBACK_DAYS
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -127,6 +138,26 @@ class MainActivity : ComponentActivity() {
             }
             setStatusMessage(message, floating = true)
             refreshLatestDates()
+        }
+        voicePermissionLauncher = registerForActivityResult(
+            ActivityResultContracts.RequestPermission()
+        ) { granted ->
+            if (granted) {
+                launchManualVitalVoiceInput()
+            } else {
+                setStatusMessage("マイク権限を許可してください。", floating = true)
+            }
+        }
+        voiceInputLauncher = registerForActivityResult(
+            ActivityResultContracts.StartActivityForResult()
+        ) { result ->
+            if (result.resultCode != Activity.RESULT_OK) {
+                return@registerForActivityResult
+            }
+            val matches = result.data
+                ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+                .orEmpty()
+            applyManualVitalVoiceResult(matches)
         }
         showTopPage()
     }
@@ -980,12 +1011,35 @@ class MainActivity : ComponentActivity() {
                 rightMargin = (24 * density).toInt()
             }
         }
-        panel.addView(TextView(this).apply {
+        val titleRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        }
+        titleRow.addView(TextView(this).apply {
             text = "バイタルをNotionに登録"
             textSize = 20f
             setTextColor(Color.WHITE)
             typeface = Typeface.DEFAULT_BOLD
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         })
+        val micButton = ImageButton(this).apply {
+            contentDescription = "音声でバイタルを入力"
+            setImageResource(R.drawable.ic_mic)
+            setColorFilter(Color.parseColor("#081018"))
+            background = GradientDrawable().apply {
+                cornerRadius = 10 * density
+                setColor(Color.parseColor("#44D7B6"))
+            }
+            layoutParams = LinearLayout.LayoutParams((44 * density).toInt(), (44 * density).toInt()).apply {
+                leftMargin = (12 * density).toInt()
+            }
+        }
+        titleRow.addView(micButton)
+        panel.addView(titleRow)
         panel.addView(TextView(this).apply {
             text = "測定日時は登録時点の時刻で保存します。"
             textSize = 13f
@@ -996,6 +1050,15 @@ class MainActivity : ComponentActivity() {
         val systolicInput = panel.addNumberInput("最高血圧")
         val diastolicInput = panel.addNumberInput("最低血圧")
         val heartRateInput = panel.addNumberInput("脈拍")
+        micButton.setOnClickListener {
+            startManualVitalVoiceInput(
+                ManualVitalVoiceInputs(
+                    systolic = systolicInput,
+                    diastolic = diastolicInput,
+                    heartRate = heartRateInput
+                )
+            )
+        }
 
         val buttons = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -1009,6 +1072,13 @@ class MainActivity : ComponentActivity() {
         }
         buttons.addView(Button(this).apply {
             text = "キャンセル"
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor("#DDE7EF"))
+            background = GradientDrawable().apply {
+                cornerRadius = 10 * density
+                setColor(Color.parseColor("#22313B"))
+                setStroke((1 * density).toInt(), Color.parseColor("#44D7B6"))
+            }
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
                 rightMargin = (8 * density).toInt()
             }
@@ -1052,11 +1122,78 @@ class MainActivity : ComponentActivity() {
             })
             window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
             window?.setDimAmount(0.64f)
+            setOnDismissListener {
+                if (manualVitalVoiceInputs?.systolic === systolicInput) {
+                    manualVitalVoiceInputs = null
+                }
+            }
             show()
             window?.setLayout(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
+        }
+    }
+
+    private fun startManualVitalVoiceInput(inputs: ManualVitalVoiceInputs) {
+        manualVitalVoiceInputs = inputs
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            launchManualVitalVoiceInput()
+        } else {
+            voicePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    private fun launchManualVitalVoiceInput() {
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.JAPAN.toLanguageTag())
+            putExtra(RecognizerIntent.EXTRA_PROMPT, "最高血圧、最低血圧、脈拍の順に数字を話してください。")
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+        }
+        try {
+            voiceInputLauncher.launch(intent)
+        } catch (_: ActivityNotFoundException) {
+            setStatusMessage("この端末では音声入力を起動できません。", floating = true)
+        }
+    }
+
+    private fun applyManualVitalVoiceResult(matches: List<String>) {
+        val inputs = manualVitalVoiceInputs ?: return
+        val values = matches
+            .flatMap { extractSpokenNumbers(it) }
+            .take(3)
+        if (values.size < 3) {
+            setStatusMessage("最高血圧、最低血圧、脈拍の順に3つの数字を話してください。", floating = true)
+            return
+        }
+
+        inputs.systolic.setText(formatManualVitalNumber(values[0]))
+        inputs.diastolic.setText(formatManualVitalNumber(values[1]))
+        inputs.heartRate.setText(values[2].toLong().toString())
+        setStatusMessage("音声入力を反映しました。", floating = true)
+    }
+
+    private fun extractSpokenNumbers(text: String): List<Double> {
+        val normalized = text.map { char ->
+            when (char) {
+                in '０'..'９' -> '0' + (char - '０')
+                '．' -> '.'
+                else -> char
+            }
+        }.joinToString("")
+        return Regex("""\d+(?:\.\d+)?""")
+            .findAll(normalized)
+            .mapNotNull { it.value.toDoubleOrNull() }
+            .filter { it > 0 }
+            .toList()
+    }
+
+    private fun formatManualVitalNumber(value: Double): String {
+        return if (value % 1.0 == 0.0) {
+            value.toLong().toString()
+        } else {
+            value.toString()
         }
     }
 
@@ -2202,6 +2339,12 @@ private data class NotionStepPage(
 private data class NotionDateValue(
     val date: LocalDate,
     val timestamp: Instant?
+)
+
+private data class ManualVitalVoiceInputs(
+    val systolic: EditText,
+    val diastolic: EditText,
+    val heartRate: EditText
 )
 
 private data class VitalMeasurement(
