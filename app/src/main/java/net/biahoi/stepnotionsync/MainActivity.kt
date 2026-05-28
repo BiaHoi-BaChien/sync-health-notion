@@ -409,6 +409,41 @@ class MainActivity : ComponentActivity() {
         return UpdateNoticeViews(card, message, button)
     }
 
+    private fun LinearLayout.addSyncActions() {
+        val density = resources.displayMetrics.density
+        val section = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding((16 * density).toInt(), (14 * density).toInt(), (16 * density).toInt(), (16 * density).toInt())
+            background = GradientDrawable().apply {
+                cornerRadius = 14 * density
+                setColor(Color.parseColor("#17232D"))
+                setStroke((1 * density).toInt(), Color.parseColor("#2A3A45"))
+            }
+            layoutParams = ViewGroup.MarginLayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = (12 * density).toInt()
+            }
+        }
+        section.addView(TextView(context).apply {
+            text = "同期"
+            textSize = 18f
+            setTextColor(Color.WHITE)
+            typeface = Typeface.DEFAULT_BOLD
+        })
+
+        val row = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        row.addActionButton("歩数", R.drawable.ic_footsteps, rightMarginDp = 6) { syncStepsToNotion() }
+        row.addActionButton("血圧・心拍", R.drawable.ic_heart_pulse, leftMarginDp = 6) { syncVitalsToNotion() }
+        section.addView(row)
+        section.addButton("すべて") { syncAllToNotion() }
+        addView(section)
+    }
+
     private fun LinearLayout.addDateRow(label: String, role: String): TextView {
         val density = resources.displayMetrics.density
         val row = LinearLayout(context).apply {
