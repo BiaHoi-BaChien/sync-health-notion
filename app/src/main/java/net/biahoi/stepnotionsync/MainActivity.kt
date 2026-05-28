@@ -11,6 +11,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.text.InputType
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.Window
 import android.view.ViewGroup
@@ -105,9 +106,11 @@ class MainActivity : ComponentActivity() {
     private lateinit var heartRatePropertyInput: EditText
     private lateinit var autoSyncSpinner: Spinner
     private var currentSyncJob: Job? = null
+    private var latestDateRefreshJob: Job? = null
     private var syncDialog: Dialog? = null
     private var syncDialogMessageText: TextView? = null
     private var messageDialog: Dialog? = null
+    private var latestDateRefreshDialog: Dialog? = null
     private var autoSyncDetailsExpanded = false
     private val lookbackDays = DEFAULT_LOOKBACK_DAYS
 
@@ -129,7 +132,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         currentSyncJob?.cancel()
+        latestDateRefreshJob?.cancel()
         dismissSyncDialog()
+        dismissLatestDateRefreshDialog()
         super.onDestroy()
     }
 
@@ -189,7 +194,8 @@ class MainActivity : ComponentActivity() {
         })
         root.addSummaryCard("自動同期の最終実行結果", "前回の自動同期").also { section ->
             autoSyncResultText = section.addDateRow("最終結果", "状態")
-            autoSyncDetailsToggleButton = section.addButton(autoSyncDetailsToggleLabel()) { toggleAutoSyncDetails() }
+            autoSyncDetailsToggleButton = section.addButton("") { toggleAutoSyncDetails() }
+            updateAutoSyncDetailsToggleButton()
             autoSyncDetailsContainer = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 visibility = if (autoSyncDetailsExpanded) View.VISIBLE else View.GONE
@@ -201,11 +207,7 @@ class MainActivity : ComponentActivity() {
             autoSyncNextRunText = autoSyncDetailsContainer.addDateRow("次回予定", "WorkManager")
         }
 
-        root.addButton("Health Connect権限を許可") { requestHealthPermission() }
-        root.addButton("歩数データを同期") { syncStepsToNotion() }
-        root.addButton("血圧・心拍データを同期") { syncVitalsToNotion() }
-        root.addButton("すべて同期") { syncAllToNotion() }
-        root.addButton("最新日付を更新") { refreshLatestDates() }
+        root.addSyncActions()
 
         statusText = TextView(this).apply {
             text = "設定後に同期してください。歩数データは1日単位で合算してNotionへ同期します。"
@@ -261,6 +263,8 @@ class MainActivity : ComponentActivity() {
         heartRatePropertyInput = root.addInput("心拍数 property name")
         root.addSectionTitle("自動同期")
         autoSyncSpinner = root.addAutoSyncSpinner()
+        root.addSectionTitle("Health Connect")
+        root.addButton("Health Connect権限を許可") { requestHealthPermission() }
 
         root.addButton("設定を保存") {
             saveSettings()
@@ -280,11 +284,35 @@ class MainActivity : ComponentActivity() {
         loadSettings()
     }
 
-    private fun centeredScrollContent(root: LinearLayout, basePadding: Int): ScrollView {
+    private fun centeredScrollContent(
+        root: LinearLayout,
+        basePadding: Int,
+        onPullRefresh: (() -> Unit)? = null
+    ): ScrollView {
         return ScrollView(this).apply {
             isFillViewport = true
             setBackgroundColor(Color.parseColor("#101820"))
             addView(root)
+            if (onPullRefresh != null) {
+                var pullStartY = 0f
+                val threshold = 92 * resources.displayMetrics.density
+                setOnTouchListener { view, event ->
+                    when (event.actionMasked) {
+                        MotionEvent.ACTION_DOWN -> {
+                            if (scrollY == 0) {
+                                pullStartY = event.y
+                            }
+                        }
+                        MotionEvent.ACTION_UP -> {
+                            if (scrollY == 0 && event.y - pullStartY > threshold) {
+                                view.performClick()
+                                onPullRefresh()
+                            }
+                        }
+                    }
+                    false
+                }
+            }
             setOnApplyWindowInsetsListener { _, insets ->
                 @Suppress("DEPRECATION")
                 root.setPadding(
@@ -447,8 +475,33 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun LinearLayout.addButton(label: String, onClick: () -> Unit): Button {
+        val button = createActionButton(label, null, onClick)
+        addView(button)
+        return button
+    }
+
+    private fun LinearLayout.addActionButton(
+        label: String,
+        iconResId: Int? = null,
+        leftMarginDp: Int = 0,
+        rightMarginDp: Int = 0,
+        onClick: () -> Unit
+    ): Button {
         val density = resources.displayMetrics.density
-        val button = Button(context).apply {
+        val button = createActionButton(label, iconResId, onClick).apply {
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                leftMargin = (leftMarginDp * density).toInt()
+                rightMargin = (rightMarginDp * density).toInt()
+                topMargin = (10 * density).toInt()
+            }
+        }
+        addView(button)
+        return button
+    }
+
+    private fun createActionButton(label: String, iconResId: Int?, onClick: () -> Unit): Button {
+        val density = resources.displayMetrics.density
+        return Button(this).apply {
             text = label
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.parseColor("#081018"))
@@ -462,10 +515,13 @@ class MainActivity : ComponentActivity() {
             ).apply {
                 topMargin = (10 * density).toInt()
             }
+            if (iconResId != null) {
+                setCompoundDrawablesWithIntrinsicBounds(iconResId, 0, 0, 0)
+                compoundDrawablePadding = (8 * density).toInt()
+                compoundDrawableTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#081018"))
+            }
             setOnClickListener { onClick() }
         }
-        addView(button)
-        return button
     }
 
     private fun LinearLayout.addAutoSyncSpinner(): Spinner {
@@ -567,46 +623,59 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun refreshLatestDates() {
+    private fun refreshLatestDates(showProgress: Boolean = false) {
+        if (latestDateRefreshJob?.isActive == true) {
+            return
+        }
         val config = currentConfig()
-        CoroutineScope(Dispatchers.Main).launch {
-            stepsPhoneDateText.text = "確認中..."
-            stepsNotionDateText.text = "確認中..."
-            vitalsPhoneDateText.text = "確認中..."
-            vitalsNotionDateText.text = "確認中..."
+        latestDateRefreshJob = CoroutineScope(Dispatchers.Main).launch {
+            try {
+                if (showProgress) {
+                    showLatestDateRefreshDialog()
+                }
+                stepsPhoneDateText.text = "確認中..."
+                stepsNotionDateText.text = "確認中..."
+                vitalsPhoneDateText.text = "確認中..."
+                vitalsNotionDateText.text = "確認中..."
 
-            val client = healthConnectClientOrNull()
-            if (client == null) {
-                stepsPhoneDateText.text = "利用不可"
-                vitalsPhoneDateText.text = "利用不可"
-            } else {
-                val granted = client.permissionController.getGrantedPermissions()
-                if (granted.contains(HealthPermission.getReadPermission(StepsRecord::class))) {
-                    stepsPhoneDateText.text = displayDateTime(readLatestStepsTime(client, recentRecordTimeRange()))
+                val client = healthConnectClientOrNull()
+                if (client == null) {
+                    stepsPhoneDateText.text = "利用不可"
+                    vitalsPhoneDateText.text = "利用不可"
                 } else {
-                    stepsPhoneDateText.text = "権限未許可"
+                    val granted = client.permissionController.getGrantedPermissions()
+                    if (granted.contains(HealthPermission.getReadPermission(StepsRecord::class))) {
+                        stepsPhoneDateText.text = displayDateTime(readLatestStepsTime(client, recentRecordTimeRange()))
+                    } else {
+                        stepsPhoneDateText.text = "権限未許可"
+                    }
+                    if (
+                        granted.contains(HealthPermission.getReadPermission(BloodPressureRecord::class)) ||
+                            granted.contains(HealthPermission.getReadPermission(HeartRateRecord::class))
+                    ) {
+                        vitalsPhoneDateText.text = displayDateTime(readLatestVitalsTime(client, granted))
+                    } else {
+                        vitalsPhoneDateText.text = "権限未許可"
+                    }
                 }
-                if (
-                    granted.contains(HealthPermission.getReadPermission(BloodPressureRecord::class)) ||
-                        granted.contains(HealthPermission.getReadPermission(HeartRateRecord::class))
-                ) {
-                    vitalsPhoneDateText.text = displayDateTime(readLatestVitalsTime(client, granted))
-                } else {
-                    vitalsPhoneDateText.text = "権限未許可"
-                }
-            }
 
-            withContext(Dispatchers.IO) {
-                val stepsDate = runCatching {
-                    if (config.hasStepsSettings()) NotionClient(config).latestStepsDate(lookbackDays) else null
-                }.getOrNull()
-                val vitalsDate = runCatching {
-                    if (config.hasVitalsSettings()) NotionClient(config).latestVitalsDate(lookbackDays) else null
-                }.getOrNull()
-                withContext(Dispatchers.Main) {
-                    stepsNotionDateText.text = if (config.hasStepsSettings()) displayNotionDateTime(stepsDate) else "設定未完了"
-                    vitalsNotionDateText.text = if (config.hasVitalsSettings()) displayNotionDateTime(vitalsDate) else "設定未完了"
+                withContext(Dispatchers.IO) {
+                    val stepsDate = runCatching {
+                        if (config.hasStepsSettings()) NotionClient(config).latestStepsDate(lookbackDays) else null
+                    }.getOrNull()
+                    val vitalsDate = runCatching {
+                        if (config.hasVitalsSettings()) NotionClient(config).latestVitalsDate(lookbackDays) else null
+                    }.getOrNull()
+                    withContext(Dispatchers.Main) {
+                        stepsNotionDateText.text = if (config.hasStepsSettings()) displayNotionDateTime(stepsDate) else "設定未完了"
+                        vitalsNotionDateText.text = if (config.hasVitalsSettings()) displayNotionDateTime(vitalsDate) else "設定未完了"
+                    }
                 }
+            } finally {
+                if (showProgress) {
+                    dismissLatestDateRefreshDialog()
+                }
+                latestDateRefreshJob = null
             }
         }
     }
@@ -643,11 +712,21 @@ class MainActivity : ComponentActivity() {
     private fun toggleAutoSyncDetails() {
         autoSyncDetailsExpanded = !autoSyncDetailsExpanded
         autoSyncDetailsContainer.visibility = if (autoSyncDetailsExpanded) View.VISIBLE else View.GONE
-        autoSyncDetailsToggleButton.text = autoSyncDetailsToggleLabel()
+        updateAutoSyncDetailsToggleButton()
     }
 
-    private fun autoSyncDetailsToggleLabel(): String =
-        if (autoSyncDetailsExpanded) "詳細を隠す" else "詳細を表示"
+    private fun updateAutoSyncDetailsToggleButton() {
+        autoSyncDetailsToggleButton.contentDescription =
+            if (autoSyncDetailsExpanded) "詳細を閉じる" else "詳細を表示"
+        autoSyncDetailsToggleButton.setCompoundDrawablesWithIntrinsicBounds(
+            0,
+            if (autoSyncDetailsExpanded) R.drawable.ic_collapse_window_up else R.drawable.ic_expand_window_down,
+            0,
+            0
+        )
+        autoSyncDetailsToggleButton.compoundDrawableTintList =
+            android.content.res.ColorStateList.valueOf(Color.parseColor("#081018"))
+    }
 
     private fun syncStepsToNotion() {
         val config = currentConfig()
@@ -869,6 +948,66 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun showLatestDateRefreshDialog() {
+        latestDateRefreshDialog?.dismiss()
+
+        val density = resources.displayMetrics.density
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(
+                (20 * density).toInt(),
+                (18 * density).toInt(),
+                (20 * density).toInt(),
+                (18 * density).toInt()
+            )
+            background = GradientDrawable().apply {
+                cornerRadius = 14 * density
+                setColor(Color.parseColor("#17232D"))
+                setStroke((1 * density).toInt(), Color.parseColor("#44D7B6"))
+            }
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER
+            ).apply {
+                leftMargin = (28 * density).toInt()
+                rightMargin = (28 * density).toInt()
+            }
+        }
+        panel.addView(TextView(this).apply {
+            text = "最新日付を更新中"
+            textSize = 20f
+            setTextColor(Color.WHITE)
+            typeface = Typeface.DEFAULT_BOLD
+        })
+        panel.addView(ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            isIndeterminate = true
+            indeterminateTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#44D7B6"))
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                (6 * density).toInt()
+            ).apply {
+                topMargin = (14 * density).toInt()
+            }
+        })
+
+        latestDateRefreshDialog = Dialog(this).apply {
+            requestWindowFeature(Window.FEATURE_NO_TITLE)
+            setCancelable(false)
+            setCanceledOnTouchOutside(false)
+            setContentView(FrameLayout(this@MainActivity).apply {
+                addView(panel)
+            })
+            window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            window?.setDimAmount(0.42f)
+            show()
+            window?.setLayout(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        }
+    }
+
     private fun showFloatingMessage(message: String) {
         messageDialog?.dismiss()
 
@@ -977,11 +1116,50 @@ class MainActivity : ComponentActivity() {
                     topMargin = (14 * density).toInt()
                     bottomMargin = (16 * density).toInt()
                 }
-                addView(TextView(this@MainActivity).apply {
-                    text = result.toDebugText()
-                    textSize = 15f
-                    setTextColor(Color.parseColor("#D9E3EA"))
-                    setLineSpacing(0f, 1.12f)
+                addView(LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.VERTICAL
+                    addView(TextView(this@MainActivity).apply {
+                        text = result.toDebugSummaryText()
+                        textSize = 15f
+                        setTextColor(Color.parseColor("#D9E3EA"))
+                        setLineSpacing(0f, 1.12f)
+                    })
+                    val detailsText = TextView(this@MainActivity).apply {
+                        text = result.toDebugDetailsText()
+                        textSize = 15f
+                        setTextColor(Color.parseColor("#D9E3EA"))
+                        setLineSpacing(0f, 1.12f)
+                        visibility = View.GONE
+                    }
+                    addView(Button(this@MainActivity).apply {
+                        text = ""
+                        contentDescription = "詳細を表示"
+                        setCompoundDrawablesWithIntrinsicBounds(0, R.drawable.ic_expand_window_down, 0, 0)
+                        compoundDrawableTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#D9E3EA"))
+                        background = GradientDrawable().apply {
+                            cornerRadius = 10 * density
+                            setColor(Color.parseColor("#22313C"))
+                        }
+                        layoutParams = LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            (44 * density).toInt()
+                        ).apply {
+                            topMargin = (12 * density).toInt()
+                            bottomMargin = (12 * density).toInt()
+                        }
+                        setOnClickListener {
+                            val isShowingDetails = detailsText.visibility == View.VISIBLE
+                            detailsText.visibility = if (isShowingDetails) View.GONE else View.VISIBLE
+                            contentDescription = if (isShowingDetails) "詳細を表示" else "詳細を閉じる"
+                            setCompoundDrawablesWithIntrinsicBounds(
+                                0,
+                                if (isShowingDetails) R.drawable.ic_expand_window_down else R.drawable.ic_collapse_window_up,
+                                0,
+                                0
+                            )
+                        }
+                    })
+                    addView(detailsText)
                 })
             })
 
@@ -1052,6 +1230,57 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun StepDebugSyncResult.toDebugSummaryText(): String {
+        return listOf(
+            "対象日: ${measurement.date}",
+            "Notion同期結果: ${operation.label}",
+            "Notionへ送信した合計歩数: ${measurement.steps}歩",
+            "Notionへ保存した測定日時: ${displayDateTime(measurement.recordedAt)}",
+            "GoogleHealth明細: ${details.size}件"
+        ).joinToString(separator = "\n")
+    }
+
+    private fun StepDebugSyncResult.toDebugDetailsText(): String {
+        val rawTotal = details.sumOf { it.steps }
+        val lines = mutableListOf<String>()
+        lines.add("集計対象origin: $GOOGLE_FIT_PACKAGE_NAME")
+        lines.add("GoogleHealth明細の合計歩数: ${rawTotal}歩")
+        if (rawTotal != measurement.steps) {
+            lines.add("差分: ${measurement.steps - rawTotal}歩")
+        }
+        lines.add("")
+        lines.add("dataOrigin.packageName別合計:")
+        details
+            .groupBy { it.dataOriginPackageName }
+            .mapValues { (_, records) -> records.sumOf { it.steps } }
+            .toSortedMap()
+            .forEach { (packageName, steps) ->
+                lines.add("- $packageName: ${steps}歩")
+            }
+        lines.add("")
+        lines.add("recordingMethod別合計:")
+        details
+            .groupBy { it.recordingMethod }
+            .mapValues { (_, records) -> records.sumOf { it.steps } }
+            .toSortedMap()
+            .forEach { (recordingMethod, steps) ->
+                lines.add("- ${recordingMethod.label}: ${steps}歩")
+            }
+        lines.add("")
+        if (details.isEmpty()) {
+            lines.add("明細レコードは取得できませんでした。Health Connectの日次集計APIの合計値をNotionへ送信しています。")
+        } else {
+            details.forEachIndexed { index, detail ->
+                lines.add(
+                    "${index + 1}. ${displayDateTime(detail.startTime)} - ${displayDateTime(detail.endTime)} / ${detail.steps}歩 / ${detail.dataOriginPackageName} / ${detail.recordingMethod.label}"
+                )
+            }
+        }
+        lines.add("")
+        lines.add("再開を押すと次の日の同期に進みます。")
+        return lines.joinToString(separator = "\n")
+    }
+
     private fun StepDebugSyncResult.toDebugText(): String {
         val rawTotal = details.sumOf { it.steps }
         val lines = mutableListOf<String>()
@@ -1102,6 +1331,11 @@ class MainActivity : ComponentActivity() {
         syncDialog?.dismiss()
         syncDialog = null
         syncDialogMessageText = null
+    }
+
+    private fun dismissLatestDateRefreshDialog() {
+        latestDateRefreshDialog?.dismiss()
+        latestDateRefreshDialog = null
     }
 
     private fun safeErrorMessage(error: Exception): String {
