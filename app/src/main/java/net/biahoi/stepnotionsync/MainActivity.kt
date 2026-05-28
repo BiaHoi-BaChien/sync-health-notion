@@ -182,7 +182,13 @@ class MainActivity : ComponentActivity() {
             stepsPhoneDateText = section.addDateRow("スマホ側", "送信元")
             stepsNotionDateText = section.addDateRow("Notion側", "送信先")
         }
-        root.addSummaryCard("バイタル", "同期方向: Notion → スマホ").also { section ->
+        root.addSummaryCard(
+            title = "バイタル",
+            direction = "同期方向: Notion → スマホ",
+            actionDescription = "バイタルをNotionに追加",
+            actionIconResId = R.drawable.ic_add,
+            action = { showManualVitalEntryDialog() }
+        ).also { section ->
             vitalsPhoneDateText = section.addDateRow("スマホ側", "送信先")
             vitalsNotionDateText = section.addDateRow("Notion側", "送信元")
         }
@@ -366,7 +372,13 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun LinearLayout.addSummaryCard(title: String, direction: String): LinearLayout {
+    private fun LinearLayout.addSummaryCard(
+        title: String,
+        direction: String,
+        actionDescription: String? = null,
+        actionIconResId: Int? = null,
+        action: (() -> Unit)? = null
+    ): LinearLayout {
         val density = resources.displayMetrics.density
         val card = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
@@ -383,12 +395,21 @@ class MainActivity : ComponentActivity() {
                 bottomMargin = (12 * density).toInt()
             }
         }
-        card.addView(TextView(context).apply {
+        val header = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        header.addView(TextView(context).apply {
             text = title
             textSize = 18f
             setTextColor(Color.WHITE)
             typeface = Typeface.DEFAULT_BOLD
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         })
+        if (actionDescription != null && actionIconResId != null && action != null) {
+            header.addView(createCardIconButton(actionDescription, actionIconResId, action))
+        }
+        card.addView(header)
         card.addView(TextView(context).apply {
             text = direction
             textSize = 13f
@@ -397,6 +418,25 @@ class MainActivity : ComponentActivity() {
         })
         addView(card)
         return card
+    }
+
+    private fun createCardIconButton(description: String, iconResId: Int, onClick: () -> Unit): ImageButton {
+        val density = resources.displayMetrics.density
+        return ImageButton(this).apply {
+            contentDescription = description
+            tooltipText = description
+            setImageResource(iconResId)
+            imageTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#081018"))
+            background = GradientDrawable().apply {
+                cornerRadius = 10 * density
+                setColor(Color.parseColor("#44D7B6"))
+            }
+            scaleType = android.widget.ImageView.ScaleType.CENTER
+            layoutParams = LinearLayout.LayoutParams((44 * density).toInt(), (40 * density).toInt()).apply {
+                leftMargin = (12 * density).toInt()
+            }
+            setOnClickListener { onClick() }
+        }
     }
 
     private fun LinearLayout.addUpdateNoticeCard(): UpdateNoticeViews {
@@ -546,6 +586,12 @@ class MainActivity : ComponentActivity() {
             setPadding((14 * density).toInt(), 0, (14 * density).toInt(), 0)
         }
         addView(input)
+        return input
+    }
+
+    private fun LinearLayout.addNumberInput(hintText: String): EditText {
+        val input = addInput(hintText)
+        input.inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL
         return input
     }
 
@@ -896,6 +942,145 @@ class MainActivity : ComponentActivity() {
         ) { client ->
             val synced = syncUnsyncedVitals(client, config)
             "血圧・心拍データを${synced}件同期しました。"
+        }
+    }
+
+    private fun showManualVitalEntryDialog() {
+        val config = currentConfig()
+        if (!config.hasVitalsSettings()) {
+            setStatusMessage("血圧・心拍データのNotion設定を入力してください。", floating = true)
+            return
+        }
+        if (currentSyncJob?.isActive == true) {
+            setStatusMessage("同期中はバイタルを登録できません。", floating = true)
+            return
+        }
+
+        val density = resources.displayMetrics.density
+        lateinit var dialog: Dialog
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(
+                (20 * density).toInt(),
+                (20 * density).toInt(),
+                (20 * density).toInt(),
+                (18 * density).toInt()
+            )
+            background = GradientDrawable().apply {
+                cornerRadius = 14 * density
+                setColor(Color.parseColor("#17232D"))
+                setStroke((1 * density).toInt(), Color.parseColor("#44D7B6"))
+            }
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER
+            ).apply {
+                leftMargin = (24 * density).toInt()
+                rightMargin = (24 * density).toInt()
+            }
+        }
+        panel.addView(TextView(this).apply {
+            text = "バイタルをNotionに登録"
+            textSize = 20f
+            setTextColor(Color.WHITE)
+            typeface = Typeface.DEFAULT_BOLD
+        })
+        panel.addView(TextView(this).apply {
+            text = "測定日時は登録時点の時刻で保存します。"
+            textSize = 13f
+            setTextColor(Color.parseColor("#AAB7C4"))
+            setPadding(0, (6 * density).toInt(), 0, (4 * density).toInt())
+        })
+
+        val systolicInput = panel.addNumberInput("最高血圧")
+        val diastolicInput = panel.addNumberInput("最低血圧")
+        val heartRateInput = panel.addNumberInput("脈拍")
+
+        val buttons = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = (16 * density).toInt()
+            }
+        }
+        buttons.addView(Button(this).apply {
+            text = "キャンセル"
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                rightMargin = (8 * density).toInt()
+            }
+            setOnClickListener { dialog.dismiss() }
+        })
+        buttons.addView(Button(this).apply {
+            text = "Notionに登録"
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor("#081018"))
+            background = GradientDrawable().apply {
+                cornerRadius = 10 * density
+                setColor(Color.parseColor("#44D7B6"))
+            }
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                leftMargin = (8 * density).toInt()
+            }
+            setOnClickListener {
+                val measurement = runCatching {
+                    VitalMeasurement(
+                        measuredAt = Instant.now(),
+                        systolic = systolicInput.requiredPositiveDouble("最高血圧"),
+                        diastolic = diastolicInput.requiredPositiveDouble("最低血圧"),
+                        heartRate = heartRateInput.requiredPositiveLong("脈拍")
+                    )
+                }.getOrElse { error ->
+                    setStatusMessage(error.message ?: "入力値を確認してください。", floating = true)
+                    return@setOnClickListener
+                }
+                dialog.dismiss()
+                registerManualVitalToNotion(config, measurement)
+            }
+        })
+        panel.addView(buttons)
+
+        dialog = Dialog(this).apply {
+            requestWindowFeature(Window.FEATURE_NO_TITLE)
+            setCancelable(true)
+            setCanceledOnTouchOutside(true)
+            setContentView(FrameLayout(this@MainActivity).apply {
+                addView(panel)
+            })
+            window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            window?.setDimAmount(0.64f)
+            show()
+            window?.setLayout(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        }
+    }
+
+    private fun registerManualVitalToNotion(config: SyncConfig, measurement: VitalMeasurement) {
+        if (currentSyncJob?.isActive == true) {
+            return
+        }
+
+        val message = "バイタルをNotionに登録中..."
+        setStatusMessage(message)
+        showSyncDialog(message)
+        currentSyncJob = CoroutineScope(Dispatchers.Main).launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    NotionClient(config).createVitalPage(measurement)
+                }
+                setStatusMessage("バイタルをNotionに登録しました。", floating = true)
+                refreshLatestDates()
+            } catch (e: Exception) {
+                setStatusMessage("バイタルの登録に失敗しました: ${safeErrorMessage(e)}", floating = true)
+            } finally {
+                currentSyncJob = null
+                dismissSyncDialog()
+            }
         }
     }
 
@@ -1420,6 +1605,20 @@ class MainActivity : ComponentActivity() {
             is NotionRequestException -> error.userMessage
             else -> error.message?.takeIf { it.isNotBlank() } ?: "詳細不明のエラー"
         }
+    }
+
+    private fun EditText.requiredPositiveDouble(label: String): Double {
+        val value = text.toString().trim().toDoubleOrNull()
+            ?: throw IllegalArgumentException("${label}を数値で入力してください。")
+        require(value > 0.0) { "${label}は1以上で入力してください。" }
+        return value
+    }
+
+    private fun EditText.requiredPositiveLong(label: String): Long {
+        val value = text.toString().trim().toLongOrNull()
+            ?: throw IllegalArgumentException("${label}を整数で入力してください。")
+        require(value > 0L) { "${label}は1以上で入力してください。" }
+        return value
     }
 
     private suspend fun checkedHealthClient(): HealthConnectClient? {
@@ -2078,6 +2277,24 @@ private class NotionClient(private val config: SyncConfig) {
                 JSONObject().put("date", JSONObject().put("start", steps.recordedAt.toNotionDateTime()))
             )
             .put(config.stepsProperty, JSONObject().put("number", steps.steps))
+    }
+
+    fun createVitalPage(measurement: VitalMeasurement) {
+        val body = JSONObject()
+            .put("parent", dataSourceParent(validDataSourceId(config.vitalsDataSourceId)))
+            .put("properties", vitalProperties(measurement))
+        request("POST", "https://api.notion.com/v1/pages", body)
+    }
+
+    private fun vitalProperties(measurement: VitalMeasurement): JSONObject {
+        return JSONObject()
+            .put(
+                config.vitalsMeasuredAtProperty,
+                JSONObject().put("date", JSONObject().put("start", measurement.measuredAt.toNotionDateTime()))
+            )
+            .put(config.systolicProperty, JSONObject().put("number", measurement.systolic))
+            .put(config.diastolicProperty, JSONObject().put("number", measurement.diastolic))
+            .put(config.heartRateProperty, JSONObject().put("number", measurement.heartRate))
     }
 
     fun readVitalMeasurements(lookbackDays: Long): List<VitalMeasurement> {
