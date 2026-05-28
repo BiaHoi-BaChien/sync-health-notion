@@ -2,10 +2,12 @@ package net.biahoi.stepnotionsync
 
 import android.app.Dialog
 import android.content.Context
+import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
+import android.net.Uri
 import android.os.Bundle
 import android.text.InputType
 import android.view.Gravity
@@ -174,6 +176,8 @@ class MainActivity : ComponentActivity() {
             setPadding(0, (4 * density).toInt(), 0, (16 * density).toInt())
         })
 
+        val updateNotice = root.addUpdateNoticeCard()
+
         root.addSummaryCard("歩数", "同期方向: スマホ → Notion").also { section ->
             stepsPhoneDateText = section.addDateRow("スマホ側", "送信元")
             stepsNotionDateText = section.addDateRow("Notion側", "送信先")
@@ -213,7 +217,8 @@ class MainActivity : ComponentActivity() {
         }
         root.addView(statusText)
 
-        setContentView(centeredScrollContent(root, padding) { refreshLatestDates(showProgress = true) })
+        setContentView(centeredScrollContent(root, padding))
+        refreshLatestReleaseNotice(updateNotice)
         refreshAutoSyncStatus()
         refreshLatestDates()
     }
@@ -354,15 +359,16 @@ class MainActivity : ComponentActivity() {
         return card
     }
 
-    private fun LinearLayout.addSyncActions() {
+    private fun LinearLayout.addUpdateNoticeCard(): UpdateNoticeViews {
         val density = resources.displayMetrics.density
-        val section = LinearLayout(context).apply {
+        val card = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding((16 * density).toInt(), (14 * density).toInt(), (16 * density).toInt(), (16 * density).toInt())
+            visibility = View.GONE
+            setPadding((16 * density).toInt(), (14 * density).toInt(), (16 * density).toInt(), (14 * density).toInt())
             background = GradientDrawable().apply {
                 cornerRadius = 14 * density
-                setColor(Color.parseColor("#17232D"))
-                setStroke((1 * density).toInt(), Color.parseColor("#2A3A45"))
+                setColor(Color.parseColor("#25301F"))
+                setStroke((1 * density).toInt(), Color.parseColor("#6BAA3A"))
             }
             layoutParams = ViewGroup.MarginLayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -371,22 +377,36 @@ class MainActivity : ComponentActivity() {
                 bottomMargin = (12 * density).toInt()
             }
         }
-        section.addView(TextView(context).apply {
-            text = "同期"
+        card.addView(TextView(context).apply {
+            text = "新しいバージョンがあります"
             textSize = 18f
             setTextColor(Color.WHITE)
             typeface = Typeface.DEFAULT_BOLD
         })
-
-        val row = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
+        val message = TextView(context).apply {
+            textSize = 14f
+            setTextColor(Color.parseColor("#D9E3EA"))
+            setPadding(0, (6 * density).toInt(), 0, 0)
         }
-        row.addActionButton("歩数", R.drawable.ic_footsteps, rightMarginDp = 6) { syncStepsToNotion() }
-        row.addActionButton("血圧・心拍", R.drawable.ic_heart_pulse, leftMarginDp = 6) { syncVitalsToNotion() }
-        section.addView(row)
-        section.addButton("すべて") { syncAllToNotion() }
-        addView(section)
+        card.addView(message)
+        val button = Button(context).apply {
+            text = "最新版をダウンロード"
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor("#081018"))
+            background = GradientDrawable().apply {
+                cornerRadius = 10 * density
+                setColor(Color.parseColor("#A6E05A"))
+            }
+            layoutParams = ViewGroup.MarginLayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = (10 * density).toInt()
+            }
+        }
+        card.addView(button)
+        addView(card)
+        return UpdateNoticeViews(card, message, button)
     }
 
     private fun LinearLayout.addDateRow(label: String, role: String): TextView {
@@ -1524,7 +1544,37 @@ class MainActivity : ComponentActivity() {
     private fun appVersionName(): String =
         packageManager.getPackageInfo(packageName, 0).versionName ?: "unknown"
 
+    private fun refreshLatestReleaseNotice(views: UpdateNoticeViews) {
+        CoroutineScope(Dispatchers.Main).launch {
+            val currentVersion = appVersionName().toSemanticVersion() ?: return@launch
+            val release = withContext(Dispatchers.IO) {
+                runCatching { GitHubReleaseClient.latestRelease() }.getOrNull()
+            } ?: return@launch
+            if (release.version <= currentVersion) {
+                return@launch
+            }
+
+            views.message.text = "現在のバージョンは ${currentVersion.label} です。${release.version.label} が公開されています。"
+            views.downloadButton.setOnClickListener { openLatestRelease(release.downloadUrl) }
+            views.card.visibility = View.VISIBLE
+        }
+    }
+
+    private fun openLatestRelease(url: String) {
+        runCatching {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+        }.onFailure {
+            setStatusMessage("ダウンロードページを開けませんでした。", floating = true)
+        }
+    }
+
 }
+
+private data class UpdateNoticeViews(
+    val card: LinearLayout,
+    val message: TextView,
+    val downloadButton: Button
+)
 
 private data class SyncConfig(
     val token: String,
@@ -2182,6 +2232,90 @@ private val Int.label: String
 private val DISPLAY_DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
 
 private val DATA_SOURCE_ID_PATTERN = Regex("^[A-Za-z0-9-]{16,128}$")
+private const val GITHUB_RELEASES_ENDPOINT =
+    "https://api.github.com/repos/BiaHoi-BaChien/sync-health-notion/releases?per_page=20"
+
+private object GitHubReleaseClient {
+    fun latestRelease(): AppRelease? {
+        val releases = JSONArray(get(GITHUB_RELEASES_ENDPOINT))
+        return (0 until releases.length())
+            .asSequence()
+            .mapNotNull { index -> releases.optJSONObject(index) }
+            .filterNot { it.optBoolean("draft") }
+            .mapNotNull { release ->
+                val version = release.optString("tag_name")
+                    .toSemanticVersion()
+                    ?: return@mapNotNull null
+                AppRelease(
+                    version = version,
+                    downloadUrl = release.apkDownloadUrl() ?: release.optString("html_url")
+                )
+            }
+            .filter { it.downloadUrl.isNotBlank() }
+            .maxByOrNull { it.version }
+    }
+
+    private fun get(endpoint: String): String {
+        val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 10_000
+            readTimeout = 15_000
+            doInput = true
+            setRequestProperty("Accept", "application/vnd.github+json")
+            setRequestProperty("User-Agent", "Health-Notion-Sync")
+            setRequestProperty("X-GitHub-Api-Version", "2022-11-28")
+        }
+        val status = connection.responseCode
+        val stream = if (status in 200..299) connection.inputStream else connection.errorStream
+        val text = stream?.let { BufferedReader(InputStreamReader(it, Charsets.UTF_8)).use { reader -> reader.readText() } }.orEmpty()
+        if (status !in 200..299) {
+            throw IllegalStateException("GitHub Releases request failed with HTTP $status")
+        }
+        return text
+    }
+}
+
+private fun JSONObject.apkDownloadUrl(): String? {
+    val assets = optJSONArray("assets") ?: return null
+    for (index in 0 until assets.length()) {
+        val asset = assets.optJSONObject(index) ?: continue
+        val name = asset.optString("name")
+        if (name.endsWith(".apk", ignoreCase = true)) {
+            return asset.optString("browser_download_url").takeIf { it.isNotBlank() }
+        }
+    }
+    return null
+}
+
+private data class AppRelease(
+    val version: SemanticVersion,
+    val downloadUrl: String
+)
+
+private data class SemanticVersion(
+    val major: Int,
+    val minor: Int,
+    val patch: Int,
+    val label: String
+) : Comparable<SemanticVersion> {
+    override fun compareTo(other: SemanticVersion): Int =
+        compareValuesBy(this, other, SemanticVersion::major, SemanticVersion::minor, SemanticVersion::patch)
+}
+
+private fun String.toSemanticVersion(): SemanticVersion? {
+    val normalized = trim().removePrefix("v").removePrefix("V")
+    val parts = normalized.split(".")
+    if (parts.size != 3) {
+        return null
+    }
+    val numbers = parts.map { it.toIntOrNull() ?: return null }
+    return SemanticVersion(
+        major = numbers[0],
+        minor = numbers[1],
+        patch = numbers[2],
+        label = normalized
+    )
+}
 
 private class NotionRequestException(
     status: Int,
