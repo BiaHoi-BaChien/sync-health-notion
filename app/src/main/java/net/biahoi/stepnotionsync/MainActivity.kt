@@ -18,6 +18,7 @@ import android.view.ViewGroup
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
+import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
@@ -163,8 +164,7 @@ class MainActivity : ComponentActivity() {
             typeface = Typeface.DEFAULT_BOLD
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         })
-        header.addView(Button(this).apply {
-            text = "設定"
+        header.addView(createSettingsButton().apply {
             setOnClickListener { showSettingsPage() }
         })
         root.addView(header)
@@ -194,7 +194,16 @@ class MainActivity : ComponentActivity() {
         })
         root.addSummaryCard("自動同期の最終実行結果", "前回の自動同期").also { section ->
             autoSyncResultText = section.addDateRow("最終結果", "状態")
-            autoSyncDetailsToggleButton = section.addButton("") { toggleAutoSyncDetails() }
+            autoSyncDetailsToggleButton = section.addButton("") { toggleAutoSyncDetails() }.apply {
+                isAllCaps = false
+                gravity = Gravity.CENTER
+                setTextColor(Color.parseColor("#D9E3EA"))
+                background = GradientDrawable().apply {
+                    cornerRadius = 10 * density
+                    setColor(Color.parseColor("#22313C"))
+                    setStroke((1 * density).toInt(), Color.parseColor("#38505E"))
+                }
+            }
             updateAutoSyncDetailsToggleButton()
             autoSyncDetailsContainer = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
@@ -217,7 +226,11 @@ class MainActivity : ComponentActivity() {
         }
         root.addView(statusText)
 
-        setContentView(centeredScrollContent(root, padding))
+        setContentView(centeredScrollContent(root, padding) {
+            refreshLatestReleaseNotice(updateNotice)
+            refreshAutoSyncStatus()
+            refreshLatestDates(showProgress = true)
+        })
         refreshLatestReleaseNotice(updateNotice)
         refreshAutoSyncStatus()
         refreshLatestDates()
@@ -289,30 +302,39 @@ class MainActivity : ComponentActivity() {
         basePadding: Int,
         onPullRefresh: (() -> Unit)? = null
     ): ScrollView {
-        return ScrollView(this).apply {
+        return object : ScrollView(this) {
+            private var pullStartY = 0f
+            private var pullStartedAtTop = false
+            private val threshold = 92 * resources.displayMetrics.density
+
+            override fun onTouchEvent(event: MotionEvent): Boolean {
+                if (onPullRefresh != null) {
+                    when (event.actionMasked) {
+                        MotionEvent.ACTION_DOWN -> {
+                            pullStartedAtTop = scrollY == 0
+                            pullStartY = event.y
+                        }
+                        MotionEvent.ACTION_UP -> {
+                            if (pullStartedAtTop && scrollY == 0 && event.y - pullStartY > threshold) {
+                                performClick()
+                                onPullRefresh()
+                            }
+                            pullStartedAtTop = false
+                        }
+                        MotionEvent.ACTION_CANCEL -> pullStartedAtTop = false
+                    }
+                }
+                return super.onTouchEvent(event)
+            }
+
+            override fun performClick(): Boolean {
+                super.performClick()
+                return true
+            }
+        }.apply {
             isFillViewport = true
             setBackgroundColor(Color.parseColor("#101820"))
             addView(root)
-            if (onPullRefresh != null) {
-                var pullStartY = 0f
-                val threshold = 92 * resources.displayMetrics.density
-                setOnTouchListener { view, event ->
-                    when (event.actionMasked) {
-                        MotionEvent.ACTION_DOWN -> {
-                            if (scrollY == 0) {
-                                pullStartY = event.y
-                            }
-                        }
-                        MotionEvent.ACTION_UP -> {
-                            if (scrollY == 0 && event.y - pullStartY > threshold) {
-                                view.performClick()
-                                onPullRefresh()
-                            }
-                        }
-                    }
-                    false
-                }
-            }
             setOnApplyWindowInsetsListener { _, insets ->
                 @Suppress("DEPRECATION")
                 root.setPadding(
@@ -322,6 +344,24 @@ class MainActivity : ComponentActivity() {
                     basePadding + insets.systemWindowInsetBottom
                 )
                 insets
+            }
+        }
+    }
+
+    private fun createSettingsButton(): ImageButton {
+        val density = resources.displayMetrics.density
+        return ImageButton(this).apply {
+            contentDescription = "設定"
+            tooltipText = "設定"
+            setImageResource(R.drawable.ic_settings)
+            imageTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#081018"))
+            background = GradientDrawable().apply {
+                cornerRadius = 10 * density
+                setColor(Color.parseColor("#D9E3EA"))
+            }
+            scaleType = android.widget.ImageView.ScaleType.CENTER
+            layoutParams = LinearLayout.LayoutParams((56 * density).toInt(), (48 * density).toInt()).apply {
+                leftMargin = (12 * density).toInt()
             }
         }
     }
@@ -411,9 +451,9 @@ class MainActivity : ComponentActivity() {
 
     private fun LinearLayout.addSyncActions() {
         val density = resources.displayMetrics.density
-        val section = LinearLayout(context).apply {
+        val card = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding((16 * density).toInt(), (14 * density).toInt(), (16 * density).toInt(), (16 * density).toInt())
+            setPadding((16 * density).toInt(), (14 * density).toInt(), (16 * density).toInt(), (14 * density).toInt())
             background = GradientDrawable().apply {
                 cornerRadius = 14 * density
                 setColor(Color.parseColor("#17232D"))
@@ -426,22 +466,22 @@ class MainActivity : ComponentActivity() {
                 bottomMargin = (12 * density).toInt()
             }
         }
-        section.addView(TextView(context).apply {
+        card.addView(TextView(context).apply {
             text = "同期"
             textSize = 18f
             setTextColor(Color.WHITE)
             typeface = Typeface.DEFAULT_BOLD
         })
 
-        val row = LinearLayout(context).apply {
+        val firstRow = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        row.addActionButton("歩数", R.drawable.ic_footsteps, rightMarginDp = 6) { syncStepsToNotion() }
-        row.addActionButton("血圧・心拍", R.drawable.ic_heart_pulse, leftMarginDp = 6) { syncVitalsToNotion() }
-        section.addView(row)
-        section.addButton("すべて") { syncAllToNotion() }
-        addView(section)
+        firstRow.addActionButton("歩数", R.drawable.ic_footsteps, rightMarginDp = 6) { syncStepsToNotion() }
+        firstRow.addActionButton("血圧・心拍", R.drawable.ic_heart_pulse, leftMarginDp = 6) { syncVitalsToNotion() }
+        card.addView(firstRow)
+        card.addButton("すべて") { syncAllToNotion() }
+        addView(card)
     }
 
     private fun LinearLayout.addDateRow(label: String, role: String): TextView {
@@ -751,16 +791,18 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun updateAutoSyncDetailsToggleButton() {
-        autoSyncDetailsToggleButton.contentDescription =
-            if (autoSyncDetailsExpanded) "詳細を閉じる" else "詳細を表示"
+        val description = if (autoSyncDetailsExpanded) "詳細を閉じる" else "詳細を表示"
+        autoSyncDetailsToggleButton.text = description
+        autoSyncDetailsToggleButton.contentDescription = description
         autoSyncDetailsToggleButton.setCompoundDrawablesWithIntrinsicBounds(
             0,
-            if (autoSyncDetailsExpanded) R.drawable.ic_collapse_window_up else R.drawable.ic_expand_window_down,
             0,
-            0
+            if (autoSyncDetailsExpanded) R.drawable.ic_chevron_up else R.drawable.ic_chevron_down,
+            0,
         )
+        autoSyncDetailsToggleButton.compoundDrawablePadding = (8 * resources.displayMetrics.density).toInt()
         autoSyncDetailsToggleButton.compoundDrawableTintList =
-            android.content.res.ColorStateList.valueOf(Color.parseColor("#081018"))
+            android.content.res.ColorStateList.valueOf(Color.parseColor("#D9E3EA"))
     }
 
     private fun syncStepsToNotion() {
