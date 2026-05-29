@@ -1160,9 +1160,7 @@ class MainActivity : ComponentActivity() {
 
     private fun applyManualVitalVoiceResult(matches: List<String>) {
         val inputs = manualVitalVoiceInputs ?: return
-        val values = matches
-            .flatMap { extractSpokenNumbers(it) }
-            .take(3)
+        val values = parseManualVitalVoiceValues(matches)
         if (values.size < 3) {
             setStatusMessage("最高血圧、最低血圧、脈拍の順に3つの数字を話してください。", floating = true)
             return
@@ -1174,7 +1172,126 @@ class MainActivity : ComponentActivity() {
         setStatusMessage("音声入力を反映しました。", floating = true)
     }
 
+    private fun parseManualVitalVoiceValues(matches: List<String>): List<Double> {
+        matches.forEach { match ->
+            extractManualVitalVoiceCandidate(match)?.let { return it }
+        }
+        return matches
+            .flatMap { extractSpokenNumbers(it) }
+            .take(MANUAL_VITAL_FIELD_COUNT)
+    }
+
+    private fun extractManualVitalVoiceCandidate(text: String): List<Double>? {
+        val tokens = extractSpokenNumberTokens(text)
+        if (tokens.size >= MANUAL_VITAL_FIELD_COUNT) {
+            return tokens
+                .take(MANUAL_VITAL_FIELD_COUNT)
+                .mapNotNull { it.toDoubleOrNull() }
+                .takeIf { it.size == MANUAL_VITAL_FIELD_COUNT && it.all { value -> value > 0 } }
+        }
+
+        if (tokens.isEmpty()) {
+            return null
+        }
+
+        return splitCompactManualVitalTokens(tokens)
+    }
+
+    private fun splitCompactManualVitalTokens(tokens: List<String>): List<Double>? {
+        fun buildCombinations(index: Int, current: List<String>): Sequence<List<String>> = sequence {
+            if (index == tokens.size) {
+                if (current.size == MANUAL_VITAL_FIELD_COUNT) {
+                    yield(current)
+                }
+                return@sequence
+            }
+
+            val token = tokens[index]
+            val remainingTokens = tokens.size - index - 1
+            val maxParts = MANUAL_VITAL_FIELD_COUNT - current.size - remainingTokens
+            for (parts in 1..maxParts) {
+                splitManualVitalToken(token, parts).forEach { split ->
+                    yieldAll(buildCombinations(index + 1, current + split))
+                }
+            }
+        }
+
+        return buildCombinations(0, emptyList())
+            .mapNotNull { parts ->
+                val values = parts.mapNotNull { it.toDoubleOrNull() }
+                if (values.size == MANUAL_VITAL_FIELD_COUNT) values else null
+            }
+            .filter { it.all { value -> value > 0 } }
+            .minByOrNull { manualVitalPlausibilityPenalty(it) }
+    }
+
+    private fun splitManualVitalToken(token: String, parts: Int): List<List<String>> {
+        if (parts == 1) {
+            return listOf(listOf(token))
+        }
+        if (token.any { it == '.' } || token.length < parts * MIN_MANUAL_VITAL_DIGITS_PER_COMPACT_VALUE) {
+            return emptyList()
+        }
+
+        fun splitFrom(start: Int, remainingParts: Int): Sequence<List<String>> = sequence {
+            if (remainingParts == 1) {
+                val last = token.substring(start)
+                if (last.length in MIN_MANUAL_VITAL_DIGITS_PER_COMPACT_VALUE..MAX_MANUAL_VITAL_DIGITS_PER_COMPACT_VALUE) {
+                    yield(listOf(last))
+                }
+                return@sequence
+            }
+
+            val remainingAfterThis = remainingParts - 1
+            val minEnd = start + MIN_MANUAL_VITAL_DIGITS_PER_COMPACT_VALUE
+            val maxEnd = minOf(
+                start + MAX_MANUAL_VITAL_DIGITS_PER_COMPACT_VALUE,
+                token.length - remainingAfterThis * MIN_MANUAL_VITAL_DIGITS_PER_COMPACT_VALUE
+            )
+            for (end in minEnd..maxEnd) {
+                val head = token.substring(start, end)
+                splitFrom(end, remainingAfterThis).forEach { tail ->
+                    yield(listOf(head) + tail)
+                }
+            }
+        }
+
+        return splitFrom(0, parts).toList()
+    }
+
+    private fun manualVitalPlausibilityPenalty(values: List<Double>): Double {
+        val systolic = values[0]
+        val diastolic = values[1]
+        val heartRate = values[2]
+        var penalty = 0.0
+        penalty += rangePenalty(systolic, 80.0, 250.0) * 4
+        penalty += rangePenalty(diastolic, 40.0, 150.0) * 4
+        penalty += rangePenalty(heartRate, 40.0, 220.0) * 4
+        if (systolic <= diastolic) {
+            penalty += 1_000.0 + (diastolic - systolic)
+        }
+        penalty += kotlin.math.abs(systolic - 120.0) / 120.0
+        penalty += kotlin.math.abs(diastolic - 80.0) / 80.0
+        penalty += kotlin.math.abs(heartRate - 75.0) / 75.0
+        return penalty
+    }
+
+    private fun rangePenalty(value: Double, min: Double, max: Double): Double {
+        return when {
+            value < min -> min - value
+            value > max -> value - max
+            else -> 0.0
+        }
+    }
+
     private fun extractSpokenNumbers(text: String): List<Double> {
+        return extractSpokenNumberTokens(text)
+            .mapNotNull { it.toDoubleOrNull() }
+            .filter { it > 0 }
+            .toList()
+    }
+
+    private fun extractSpokenNumberTokens(text: String): List<String> {
         val normalized = text.map { char ->
             when (char) {
                 in '０'..'９' -> '0' + (char - '０')
@@ -1184,8 +1301,7 @@ class MainActivity : ComponentActivity() {
         }.joinToString("")
         return Regex("""\d+(?:\.\d+)?""")
             .findAll(normalized)
-            .mapNotNull { it.value.toDoubleOrNull() }
-            .filter { it > 0 }
+            .map { it.value }
             .toList()
     }
 
@@ -2648,6 +2764,9 @@ private const val AUTO_SYNC_LAST_SUCCESS_AT_KEY = "autoSyncLastSuccessAt"
 private const val AUTO_SYNC_LAST_FAILURE_AT_KEY = "autoSyncLastFailureAt"
 private const val AUTO_SYNC_FAILURE_REASON_KEY = "autoSyncFailureReason"
 private const val DEFAULT_LOOKBACK_DAYS = 30L
+private const val MANUAL_VITAL_FIELD_COUNT = 3
+private const val MIN_MANUAL_VITAL_DIGITS_PER_COMPACT_VALUE = 2
+private const val MAX_MANUAL_VITAL_DIGITS_PER_COMPACT_VALUE = 3
 private val AUTO_SYNC_REQUIRED_PERMISSIONS = setOf(
     HealthPermission.getReadPermission(StepsRecord::class),
     HealthPermission.getReadPermission(BloodPressureRecord::class),
