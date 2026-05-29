@@ -59,7 +59,7 @@ jobs:
         run: |
           version_name="$(sed -nE 's/^val appVersionName = "([^"]+)"/\1/p' app/build.gradle.kts)"
           short_sha="$(git rev-parse --short HEAD)"
-          tag_name="v${version_name}-${short_sha}"
+          tag_name="v${version_name}"
           apk_path="$(find app/build/outputs/apk/release -name '*.apk' -print -quit)"
 
           test -n "$version_name"
