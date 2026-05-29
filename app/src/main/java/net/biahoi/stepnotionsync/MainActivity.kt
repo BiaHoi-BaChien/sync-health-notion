@@ -2859,31 +2859,6 @@ private data class AppRelease(
     val downloadUrl: String
 )
 
-private data class SemanticVersion(
-    val major: Int,
-    val minor: Int,
-    val patch: Int,
-    val label: String
-) : Comparable<SemanticVersion> {
-    override fun compareTo(other: SemanticVersion): Int =
-        compareValuesBy(this, other, SemanticVersion::major, SemanticVersion::minor, SemanticVersion::patch)
-}
-
-private fun String.toSemanticVersion(): SemanticVersion? {
-    val normalized = trim().removePrefix("v").removePrefix("V")
-    val parts = normalized.split(".")
-    if (parts.size != 3) {
-        return null
-    }
-    val numbers = parts.map { it.toIntOrNull() ?: return null }
-    return SemanticVersion(
-        major = numbers[0],
-        minor = numbers[1],
-        patch = numbers[2],
-        label = normalized
-    )
-}
-
 private class NotionRequestException(
     status: Int,
     private val notionMessage: String?
