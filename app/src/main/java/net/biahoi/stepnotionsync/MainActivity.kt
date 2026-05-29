@@ -231,6 +231,15 @@ class MainActivity : ComponentActivity() {
         })
         root.addSummaryCard("自動同期の最終実行結果", "前回の自動同期").also { section ->
             autoSyncResultText = section.addDateRow("最終結果", "状態")
+            autoSyncDetailsContainer = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                visibility = if (autoSyncDetailsExpanded) View.VISIBLE else View.GONE
+            }
+            section.addView(autoSyncDetailsContainer)
+            autoSyncLastSuccessText = autoSyncDetailsContainer.addDateRow("最終成功", "時刻")
+            autoSyncLastFailureText = autoSyncDetailsContainer.addDateRow("最終失敗", "時刻")
+            autoSyncFailureReasonText = autoSyncDetailsContainer.addDateRow("失敗理由", "直近")
+            autoSyncNextRunText = autoSyncDetailsContainer.addDateRow("次回予定", "WorkManager")
             autoSyncDetailsToggleButton = section.addButton("") { toggleAutoSyncDetails() }.apply {
                 isAllCaps = false
                 gravity = Gravity.CENTER
@@ -242,15 +251,6 @@ class MainActivity : ComponentActivity() {
                 }
             }
             updateAutoSyncDetailsToggleButton()
-            autoSyncDetailsContainer = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                visibility = if (autoSyncDetailsExpanded) View.VISIBLE else View.GONE
-            }
-            section.addView(autoSyncDetailsContainer)
-            autoSyncLastSuccessText = autoSyncDetailsContainer.addDateRow("最終成功", "時刻")
-            autoSyncLastFailureText = autoSyncDetailsContainer.addDateRow("最終失敗", "時刻")
-            autoSyncFailureReasonText = autoSyncDetailsContainer.addDateRow("失敗理由", "直近")
-            autoSyncNextRunText = autoSyncDetailsContainer.addDateRow("次回予定", "WorkManager")
         }
 
         root.addSyncActions()
@@ -653,14 +653,25 @@ class MainActivity : ComponentActivity() {
 
     private fun createActionButton(label: String, iconResId: Int?, onClick: () -> Unit): Button {
         val density = resources.displayMetrics.density
+        val cornerRadius = 10 * density
         return Button(this).apply {
             text = label
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.parseColor("#081018"))
             background = GradientDrawable().apply {
-                cornerRadius = 10 * density
+                cornerRadii = floatArrayOf(
+                    cornerRadius,
+                    cornerRadius,
+                    cornerRadius,
+                    cornerRadius,
+                    cornerRadius,
+                    cornerRadius,
+                    cornerRadius,
+                    cornerRadius,
+                )
                 setColor(Color.parseColor("#44D7B6"))
             }
+            backgroundTintList = null
             layoutParams = ViewGroup.MarginLayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
