@@ -1,14 +1,19 @@
 package net.biahoi.stepnotionsync
 
+import android.Manifest
+import android.app.Activity
 import android.app.Dialog
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
+import android.speech.RecognizerIntent
 import android.text.InputType
 import android.view.Gravity
 import android.view.MotionEvent
@@ -27,6 +32,8 @@ import android.widget.TextView
 import android.widget.ArrayAdapter
 import androidx.activity.ComponentActivity
 import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.PermissionController
 import androidx.health.connect.client.permission.HealthPermission
@@ -70,6 +77,7 @@ import java.time.LocalTime
 import java.time.Period
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.coroutineContext
 import kotlin.coroutines.resume
@@ -84,6 +92,8 @@ class MainActivity : ComponentActivity() {
         HealthPermission.PERMISSION_READ_HEALTH_DATA_IN_BACKGROUND
     )
     private lateinit var permissionLauncher: ActivityResultLauncher<Set<String>>
+    private lateinit var voicePermissionLauncher: ActivityResultLauncher<String>
+    private lateinit var voiceInputLauncher: ActivityResultLauncher<Intent>
     private lateinit var statusText: TextView
     private lateinit var stepsPhoneDateText: TextView
     private lateinit var stepsNotionDateText: TextView
@@ -113,6 +123,7 @@ class MainActivity : ComponentActivity() {
     private var messageDialog: Dialog? = null
     private var latestDateRefreshDialog: Dialog? = null
     private var autoSyncDetailsExpanded = false
+    private var manualVitalVoiceInputs: ManualVitalVoiceInputs? = null
     private val lookbackDays = DEFAULT_LOOKBACK_DAYS
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -127,6 +138,26 @@ class MainActivity : ComponentActivity() {
             }
             setStatusMessage(message, floating = true)
             refreshLatestDates()
+        }
+        voicePermissionLauncher = registerForActivityResult(
+            ActivityResultContracts.RequestPermission()
+        ) { granted ->
+            if (granted) {
+                launchManualVitalVoiceInput()
+            } else {
+                setStatusMessage("マイク権限を許可してください。", floating = true)
+            }
+        }
+        voiceInputLauncher = registerForActivityResult(
+            ActivityResultContracts.StartActivityForResult()
+        ) { result ->
+            if (result.resultCode != Activity.RESULT_OK) {
+                return@registerForActivityResult
+            }
+            val matches = result.data
+                ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
+                .orEmpty()
+            applyManualVitalVoiceResult(matches)
         }
         showTopPage()
     }
@@ -200,6 +231,15 @@ class MainActivity : ComponentActivity() {
         })
         root.addSummaryCard("自動同期の最終実行結果", "前回の自動同期").also { section ->
             autoSyncResultText = section.addDateRow("最終結果", "状態")
+            autoSyncDetailsContainer = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                visibility = if (autoSyncDetailsExpanded) View.VISIBLE else View.GONE
+            }
+            section.addView(autoSyncDetailsContainer)
+            autoSyncLastSuccessText = autoSyncDetailsContainer.addDateRow("最終成功", "時刻")
+            autoSyncLastFailureText = autoSyncDetailsContainer.addDateRow("最終失敗", "時刻")
+            autoSyncFailureReasonText = autoSyncDetailsContainer.addDateRow("失敗理由", "直近")
+            autoSyncNextRunText = autoSyncDetailsContainer.addDateRow("次回予定", "WorkManager")
             autoSyncDetailsToggleButton = section.addButton("") { toggleAutoSyncDetails() }.apply {
                 isAllCaps = false
                 gravity = Gravity.CENTER
@@ -211,15 +251,6 @@ class MainActivity : ComponentActivity() {
                 }
             }
             updateAutoSyncDetailsToggleButton()
-            autoSyncDetailsContainer = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                visibility = if (autoSyncDetailsExpanded) View.VISIBLE else View.GONE
-            }
-            section.addView(autoSyncDetailsContainer)
-            autoSyncLastSuccessText = autoSyncDetailsContainer.addDateRow("最終成功", "時刻")
-            autoSyncLastFailureText = autoSyncDetailsContainer.addDateRow("最終失敗", "時刻")
-            autoSyncFailureReasonText = autoSyncDetailsContainer.addDateRow("失敗理由", "直近")
-            autoSyncNextRunText = autoSyncDetailsContainer.addDateRow("次回予定", "WorkManager")
         }
 
         root.addSyncActions()
@@ -622,14 +653,25 @@ class MainActivity : ComponentActivity() {
 
     private fun createActionButton(label: String, iconResId: Int?, onClick: () -> Unit): Button {
         val density = resources.displayMetrics.density
+        val cornerRadius = 10 * density
         return Button(this).apply {
             text = label
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.parseColor("#081018"))
             background = GradientDrawable().apply {
-                cornerRadius = 10 * density
+                cornerRadii = floatArrayOf(
+                    cornerRadius,
+                    cornerRadius,
+                    cornerRadius,
+                    cornerRadius,
+                    cornerRadius,
+                    cornerRadius,
+                    cornerRadius,
+                    cornerRadius,
+                )
                 setColor(Color.parseColor("#44D7B6"))
             }
+            backgroundTintList = null
             layoutParams = ViewGroup.MarginLayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
@@ -980,12 +1022,35 @@ class MainActivity : ComponentActivity() {
                 rightMargin = (24 * density).toInt()
             }
         }
-        panel.addView(TextView(this).apply {
+        val titleRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        }
+        titleRow.addView(TextView(this).apply {
             text = "バイタルをNotionに登録"
             textSize = 20f
             setTextColor(Color.WHITE)
             typeface = Typeface.DEFAULT_BOLD
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         })
+        val micButton = ImageButton(this).apply {
+            contentDescription = "音声でバイタルを入力"
+            setImageResource(R.drawable.ic_mic)
+            setColorFilter(Color.parseColor("#081018"))
+            background = GradientDrawable().apply {
+                cornerRadius = 10 * density
+                setColor(Color.parseColor("#44D7B6"))
+            }
+            layoutParams = LinearLayout.LayoutParams((44 * density).toInt(), (44 * density).toInt()).apply {
+                leftMargin = (12 * density).toInt()
+            }
+        }
+        titleRow.addView(micButton)
+        panel.addView(titleRow)
         panel.addView(TextView(this).apply {
             text = "測定日時は登録時点の時刻で保存します。"
             textSize = 13f
@@ -996,6 +1061,15 @@ class MainActivity : ComponentActivity() {
         val systolicInput = panel.addNumberInput("最高血圧")
         val diastolicInput = panel.addNumberInput("最低血圧")
         val heartRateInput = panel.addNumberInput("脈拍")
+        micButton.setOnClickListener {
+            startManualVitalVoiceInput(
+                ManualVitalVoiceInputs(
+                    systolic = systolicInput,
+                    diastolic = diastolicInput,
+                    heartRate = heartRateInput
+                )
+            )
+        }
 
         val buttons = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -1009,6 +1083,13 @@ class MainActivity : ComponentActivity() {
         }
         buttons.addView(Button(this).apply {
             text = "キャンセル"
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor("#DDE7EF"))
+            background = GradientDrawable().apply {
+                cornerRadius = 10 * density
+                setColor(Color.parseColor("#22313B"))
+                setStroke((1 * density).toInt(), Color.parseColor("#44D7B6"))
+            }
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
                 rightMargin = (8 * density).toInt()
             }
@@ -1052,11 +1133,194 @@ class MainActivity : ComponentActivity() {
             })
             window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
             window?.setDimAmount(0.64f)
+            setOnDismissListener {
+                if (manualVitalVoiceInputs?.systolic === systolicInput) {
+                    manualVitalVoiceInputs = null
+                }
+            }
             show()
             window?.setLayout(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
+        }
+    }
+
+    private fun startManualVitalVoiceInput(inputs: ManualVitalVoiceInputs) {
+        manualVitalVoiceInputs = inputs
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            launchManualVitalVoiceInput()
+        } else {
+            voicePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    private fun launchManualVitalVoiceInput() {
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.JAPAN.toLanguageTag())
+            putExtra(RecognizerIntent.EXTRA_PROMPT, "最高血圧、最低血圧、脈拍の順に数字を話してください。")
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+        }
+        try {
+            voiceInputLauncher.launch(intent)
+        } catch (_: ActivityNotFoundException) {
+            setStatusMessage("この端末では音声入力を起動できません。", floating = true)
+        }
+    }
+
+    private fun applyManualVitalVoiceResult(matches: List<String>) {
+        val inputs = manualVitalVoiceInputs ?: return
+        val values = parseManualVitalVoiceValues(matches)
+        if (values.size < 3) {
+            setStatusMessage("最高血圧、最低血圧、脈拍の順に3つの数字を話してください。", floating = true)
+            return
+        }
+
+        inputs.systolic.setText(formatManualVitalNumber(values[0]))
+        inputs.diastolic.setText(formatManualVitalNumber(values[1]))
+        inputs.heartRate.setText(values[2].toLong().toString())
+        setStatusMessage("音声入力を反映しました。", floating = true)
+    }
+
+    private fun parseManualVitalVoiceValues(matches: List<String>): List<Double> {
+        matches.forEach { match ->
+            extractManualVitalVoiceCandidate(match)?.let { return it }
+        }
+        return matches
+            .flatMap { extractSpokenNumbers(it) }
+            .take(MANUAL_VITAL_FIELD_COUNT)
+    }
+
+    private fun extractManualVitalVoiceCandidate(text: String): List<Double>? {
+        val tokens = extractSpokenNumberTokens(text)
+        if (tokens.size >= MANUAL_VITAL_FIELD_COUNT) {
+            return tokens
+                .take(MANUAL_VITAL_FIELD_COUNT)
+                .mapNotNull { it.toDoubleOrNull() }
+                .takeIf { it.size == MANUAL_VITAL_FIELD_COUNT && it.all { value -> value > 0 } }
+        }
+
+        if (tokens.isEmpty()) {
+            return null
+        }
+
+        return splitCompactManualVitalTokens(tokens)
+    }
+
+    private fun splitCompactManualVitalTokens(tokens: List<String>): List<Double>? {
+        fun buildCombinations(index: Int, current: List<String>): Sequence<List<String>> = sequence {
+            if (index == tokens.size) {
+                if (current.size == MANUAL_VITAL_FIELD_COUNT) {
+                    yield(current)
+                }
+                return@sequence
+            }
+
+            val token = tokens[index]
+            val remainingTokens = tokens.size - index - 1
+            val maxParts = MANUAL_VITAL_FIELD_COUNT - current.size - remainingTokens
+            for (parts in 1..maxParts) {
+                splitManualVitalToken(token, parts).forEach { split ->
+                    yieldAll(buildCombinations(index + 1, current + split))
+                }
+            }
+        }
+
+        return buildCombinations(0, emptyList())
+            .mapNotNull { parts ->
+                val values = parts.mapNotNull { it.toDoubleOrNull() }
+                if (values.size == MANUAL_VITAL_FIELD_COUNT) values else null
+            }
+            .filter { it.all { value -> value > 0 } }
+            .minByOrNull { manualVitalPlausibilityPenalty(it) }
+    }
+
+    private fun splitManualVitalToken(token: String, parts: Int): List<List<String>> {
+        if (parts == 1) {
+            return listOf(listOf(token))
+        }
+        if (token.any { it == '.' } || token.length < parts * MIN_MANUAL_VITAL_DIGITS_PER_COMPACT_VALUE) {
+            return emptyList()
+        }
+
+        fun splitFrom(start: Int, remainingParts: Int): Sequence<List<String>> = sequence {
+            if (remainingParts == 1) {
+                val last = token.substring(start)
+                if (last.length in MIN_MANUAL_VITAL_DIGITS_PER_COMPACT_VALUE..MAX_MANUAL_VITAL_DIGITS_PER_COMPACT_VALUE) {
+                    yield(listOf(last))
+                }
+                return@sequence
+            }
+
+            val remainingAfterThis = remainingParts - 1
+            val minEnd = start + MIN_MANUAL_VITAL_DIGITS_PER_COMPACT_VALUE
+            val maxEnd = minOf(
+                start + MAX_MANUAL_VITAL_DIGITS_PER_COMPACT_VALUE,
+                token.length - remainingAfterThis * MIN_MANUAL_VITAL_DIGITS_PER_COMPACT_VALUE
+            )
+            for (end in minEnd..maxEnd) {
+                val head = token.substring(start, end)
+                splitFrom(end, remainingAfterThis).forEach { tail ->
+                    yield(listOf(head) + tail)
+                }
+            }
+        }
+
+        return splitFrom(0, parts).toList()
+    }
+
+    private fun manualVitalPlausibilityPenalty(values: List<Double>): Double {
+        val systolic = values[0]
+        val diastolic = values[1]
+        val heartRate = values[2]
+        var penalty = 0.0
+        penalty += rangePenalty(systolic, 80.0, 250.0) * 4
+        penalty += rangePenalty(diastolic, 40.0, 150.0) * 4
+        penalty += rangePenalty(heartRate, 40.0, 220.0) * 4
+        if (systolic <= diastolic) {
+            penalty += 1_000.0 + (diastolic - systolic)
+        }
+        penalty += kotlin.math.abs(systolic - 120.0) / 120.0
+        penalty += kotlin.math.abs(diastolic - 80.0) / 80.0
+        penalty += kotlin.math.abs(heartRate - 75.0) / 75.0
+        return penalty
+    }
+
+    private fun rangePenalty(value: Double, min: Double, max: Double): Double {
+        return when {
+            value < min -> min - value
+            value > max -> value - max
+            else -> 0.0
+        }
+    }
+
+    private fun extractSpokenNumbers(text: String): List<Double> {
+        return extractSpokenNumberTokens(text)
+            .mapNotNull { it.toDoubleOrNull() }
+            .filter { it > 0 }
+            .toList()
+    }
+
+    private fun extractSpokenNumberTokens(text: String): List<String> {
+        val normalized = text.map { char ->
+            when (char) {
+                in '０'..'９' -> '0' + (char - '０')
+                '．' -> '.'
+                else -> char
+            }
+        }.joinToString("")
+        return Regex("""\d+(?:\.\d+)?""")
+            .findAll(normalized)
+            .map { it.value }
+            .toList()
+    }
+
+    private fun formatManualVitalNumber(value: Double): String {
+        return if (value % 1.0 == 0.0) {
+            value.toLong().toString()
+        } else {
+            value.toString()
         }
     }
 
@@ -2204,6 +2468,12 @@ private data class NotionDateValue(
     val timestamp: Instant?
 )
 
+private data class ManualVitalVoiceInputs(
+    val systolic: EditText,
+    val diastolic: EditText,
+    val heartRate: EditText
+)
+
 private data class VitalMeasurement(
     val measuredAt: Instant,
     val systolic: Double,
@@ -2505,6 +2775,9 @@ private const val AUTO_SYNC_LAST_SUCCESS_AT_KEY = "autoSyncLastSuccessAt"
 private const val AUTO_SYNC_LAST_FAILURE_AT_KEY = "autoSyncLastFailureAt"
 private const val AUTO_SYNC_FAILURE_REASON_KEY = "autoSyncFailureReason"
 private const val DEFAULT_LOOKBACK_DAYS = 30L
+private const val MANUAL_VITAL_FIELD_COUNT = 3
+private const val MIN_MANUAL_VITAL_DIGITS_PER_COMPACT_VALUE = 2
+private const val MAX_MANUAL_VITAL_DIGITS_PER_COMPACT_VALUE = 3
 private val AUTO_SYNC_REQUIRED_PERMISSIONS = setOf(
     HealthPermission.getReadPermission(StepsRecord::class),
     HealthPermission.getReadPermission(BloodPressureRecord::class),
