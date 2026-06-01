@@ -549,7 +549,7 @@ class MainActivity : ComponentActivity() {
             gravity = Gravity.CENTER_VERTICAL
         }
         firstRow.addActionButton("歩数", R.drawable.ic_footsteps, rightMarginDp = 6) { syncStepsToNotion() }
-        firstRow.addActionButton("血圧・心拍", R.drawable.ic_heart_pulse, leftMarginDp = 6) { syncVitalsToNotion() }
+        firstRow.addActionButton("血圧・脈拍", R.drawable.ic_heart_pulse, leftMarginDp = 6) { syncVitalsToNotion() }
         card.addView(firstRow)
         card.addButton("すべて") { syncAllToNotion() }
         addView(card)
