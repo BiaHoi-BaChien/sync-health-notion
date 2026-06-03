@@ -20,8 +20,39 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Check release version change
+        id: version_guard
+        run: |
+          current_version="$(sed -nE 's/^val appVersionName = "([^"]+)"/\1/p' app/build.gradle.kts)"
+          test -n "$current_version"
+
+          before_sha="${{ github.event.before }}"
+          previous_version=""
+
+          if [ -n "$before_sha" ] && [ "$before_sha" != "0000000000000000000000000000000000000000" ] && git cat-file -e "$before_sha:app/build.gradle.kts" 2>/dev/null; then
+            previous_version="$(git show "$before_sha:app/build.gradle.kts" | sed -nE 's/^val appVersionName = "([^"]+)"/\1/p')"
+          fi
+
+          if [ "$before_sha" = "0000000000000000000000000000000000000000" ]; then
+            should_release=true
+          elif [ -z "$previous_version" ]; then
+            should_release=false
+          elif [ "$previous_version" != "$current_version" ]; then
+            should_release=true
+          else
+            should_release=false
+          fi
+
+          echo "current_version=$current_version" >> "$GITHUB_OUTPUT"
+          echo "previous_version=$previous_version" >> "$GITHUB_OUTPUT"
+          echo "should_release=$should_release" >> "$GITHUB_OUTPUT"
+          echo "Release version changed: $previous_version -> $current_version ($should_release)"
 
       - name: Set up JDK
+        if: steps.version_guard.outputs.should_release == 'true'
         uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -29,6 +60,7 @@ jobs:
           cache: gradle
 
       - name: Restore release signing files
+        if: steps.version_guard.outputs.should_release == 'true'
         env:
           RELEASE_KEYSTORE_BASE64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_BASE64 }}
           RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_STORE_PASSWORD }}
@@ -49,12 +81,15 @@ jobs:
           EOF
 
       - name: Make Gradle wrapper executable
+        if: steps.version_guard.outputs.should_release == 'true'
         run: chmod +x gradlew
 
       - name: Build signed release APK
+        if: steps.version_guard.outputs.should_release == 'true'
         run: ./gradlew assembleRelease
 
       - name: Read release metadata
+        if: steps.version_guard.outputs.should_release == 'true'
         id: metadata
         run: |
           version_name="$(sed -nE 's/^val appVersionName = "([^"]+)"/\1/p' app/build.gradle.kts)"
@@ -71,6 +106,7 @@ jobs:
           echo "apk_path=$apk_path" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub release
+        if: steps.version_guard.outputs.should_release == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ steps.metadata.outputs.tag_name }}
@@ -86,3 +122,8 @@ jobs:
               --title "sync-health-notion $VERSION_NAME ($SHORT_SHA)" \
               --notes "Automated signed APK build from main commit $GITHUB_SHA."
           fi
+
+      - name: Skip release
+        if: steps.version_guard.outputs.should_release != 'true'
+        run: |
+          echo "appVersionName is unchanged (${{ steps.version_guard.outputs.current_version }}); skipping signed APK release."
