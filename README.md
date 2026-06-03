@@ -66,7 +66,7 @@ keyPassword=...
 
 ## GitHub release automation
 
-When source is pushed or merged into `main`, GitHub Actions builds a signed release APK and creates a GitHub Release with the APK attached.
+When source is pushed or merged into `main` with a changed `appVersionName`, GitHub Actions builds a signed release APK and creates a GitHub Release with the APK attached. Changes that leave `appVersionName` unchanged skip the release build, release upload, and release notification path.
 
 Before merging a release change, update `appVersionName` in `app/build.gradle.kts`. Android `versionCode` is generated from that SemVer value as `MAJOR * 10000 + MINOR * 100 + PATCH`, so `0.0.3` builds with `versionCode 3` and future release APKs remain installable over older releases.
 
