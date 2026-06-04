@@ -2343,14 +2343,18 @@ private object HealthNotionSyncEngine {
         val notion = NotionClient(config)
         val notionMeasurements = notion.readVitalMeasurements(lookbackDays)
         val existingTimes = readVitalMeasurementTimes(client, lookbackDays)
-        val measurementsToInsert = notionMeasurements.filter { it.measuredAt !in existingTimes }
+        val recordsToInsert = notionMeasurements.flatMap { measurement ->
+            measurement.toMissingHealthConnectRecords(existingTimes)
+        }
         coroutineContext.ensureActive()
-        if (measurementsToInsert.isEmpty()) {
+        if (recordsToInsert.isEmpty()) {
             return 0
         }
 
-        client.insertRecords(measurementsToInsert.flatMap { it.toHealthConnectRecords() })
-        return measurementsToInsert.size
+        client.insertRecords(recordsToInsert)
+        return notionMeasurements.count { measurement ->
+            measurement.needsHealthConnectInsert(existingTimes)
+        }
     }
 
     private suspend fun readDailyStepMeasurements(
@@ -2410,17 +2414,27 @@ private object HealthNotionSyncEngine {
     private suspend fun readVitalMeasurementTimes(
         client: HealthConnectClient,
         lookbackDays: Long
-    ): Set<Instant> {
+    ): ExistingVitalMeasurementTimes {
         val zone = ZoneId.systemDefault()
         val today = LocalDate.now()
         val start = today.minusDays(lookbackDays).atStartOfDay(zone).toInstant()
         val end = today.plusDays(1).atStartOfDay(zone).toInstant()
-        return client.readRecords(
+        val bloodPressureTimes = client.readRecords(
             ReadRecordsRequest(
                 recordType = BloodPressureRecord::class,
                 timeRangeFilter = TimeRangeFilter.between(start, end)
             )
         ).records.mapTo(mutableSetOf()) { it.time }
+        val heartRateTimes = client.readRecords(
+            ReadRecordsRequest(
+                recordType = HeartRateRecord::class,
+                timeRangeFilter = TimeRangeFilter.between(start, end)
+            )
+        ).records.flatMapTo(mutableSetOf()) { record -> record.samples.map { it.time } }
+        return ExistingVitalMeasurementTimes(
+            bloodPressureTimes = bloodPressureTimes,
+            heartRateTimes = heartRateTimes
+        )
     }
 }
 
@@ -2481,19 +2495,28 @@ private data class VitalMeasurement(
     val heartRate: Long?
 )
 
-private fun VitalMeasurement.toHealthConnectRecords(): List<androidx.health.connect.client.records.Record> {
+private data class ExistingVitalMeasurementTimes(
+    val bloodPressureTimes: Set<Instant>,
+    val heartRateTimes: Set<Instant>
+)
+
+private fun VitalMeasurement.toMissingHealthConnectRecords(
+    existingTimes: ExistingVitalMeasurementTimes
+): List<androidx.health.connect.client.records.Record> {
     val zoneOffset = measuredAt.atZone(ZoneId.systemDefault()).offset
     return buildList {
-        add(
-            BloodPressureRecord(
-                time = measuredAt,
-                zoneOffset = zoneOffset,
-                metadata = Metadata.manualEntry("notion-blood-pressure-$measuredAt"),
-                systolic = Pressure.millimetersOfMercury(systolic),
-                diastolic = Pressure.millimetersOfMercury(diastolic)
+        if (measuredAt !in existingTimes.bloodPressureTimes) {
+            add(
+                BloodPressureRecord(
+                    time = measuredAt,
+                    zoneOffset = zoneOffset,
+                    metadata = Metadata.manualEntry("notion-blood-pressure-$measuredAt"),
+                    systolic = Pressure.millimetersOfMercury(systolic),
+                    diastolic = Pressure.millimetersOfMercury(diastolic)
+                )
             )
-        )
-        if (heartRate != null) {
+        }
+        if (heartRate != null && measuredAt !in existingTimes.heartRateTimes) {
             add(
                 HeartRateRecord(
                     startTime = measuredAt,
@@ -2507,6 +2530,10 @@ private fun VitalMeasurement.toHealthConnectRecords(): List<androidx.health.conn
         }
     }
 }
+
+private fun VitalMeasurement.needsHealthConnectInsert(existingTimes: ExistingVitalMeasurementTimes): Boolean =
+    measuredAt !in existingTimes.bloodPressureTimes ||
+        (heartRate != null && measuredAt !in existingTimes.heartRateTimes)
 
 private class NotionClient(private val config: SyncConfig) {
     fun latestStepsDate(lookbackDays: Long): NotionDateValue? =
