@@ -24,6 +24,7 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageButton
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
@@ -177,7 +178,7 @@ class MainActivity : ComponentActivity() {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(padding, padding, padding, padding)
-            setBackgroundColor(Color.parseColor("#101820"))
+            background = topBackground()
             layoutParams = ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
@@ -190,7 +191,7 @@ class MainActivity : ComponentActivity() {
         }
         header.addView(TextView(this).apply {
             text = "Health Notion Sync"
-            textSize = 28f
+            textSize = 30f
             setTextColor(Color.WHITE)
             typeface = Typeface.DEFAULT_BOLD
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
@@ -201,45 +202,53 @@ class MainActivity : ComponentActivity() {
         root.addView(header)
 
         root.addView(TextView(this).apply {
-            text = "スマホとNotionの最新データ日時"
+            text = "最新データの同期状況を確認できます"
             textSize = 14f
             setTextColor(Color.parseColor("#AAB7C4"))
-            setPadding(0, (4 * density).toInt(), 0, (16 * density).toInt())
+            setPadding(0, (6 * density).toInt(), 0, (24 * density).toInt())
         })
 
         val updateNotice = root.addUpdateNoticeCard()
 
-        root.addSummaryCard("歩数", "同期方向: スマホ → Notion").also { section ->
-            stepsPhoneDateText = section.addDateRow("スマホ側", "送信元")
-            stepsNotionDateText = section.addDateRow("Notion側", "送信先")
+        root.addSyncStatusCard(
+            title = "歩数",
+            iconResId = R.drawable.ic_footsteps,
+            leftLabel = "スマホ",
+            leftIconResId = R.drawable.ic_phone,
+            rightLabel = "Notion",
+            rightIconResId = R.drawable.ic_notion,
+            directionIconResId = R.drawable.ic_arrow_right,
+        ).also { views ->
+            stepsPhoneDateText = views.leftDateText
+            stepsNotionDateText = views.rightDateText
         }
-        root.addSummaryCard(
+        root.addSyncStatusCard(
             title = "バイタル",
-            direction = "同期方向: Notion → スマホ",
+            iconResId = R.drawable.ic_heart_pulse,
+            leftLabel = "Notion",
+            leftIconResId = R.drawable.ic_notion,
+            rightLabel = "スマホ",
+            rightIconResId = R.drawable.ic_phone,
+            directionIconResId = R.drawable.ic_arrow_left,
             actionDescription = "バイタルをNotionに追加",
             actionIconResId = R.drawable.ic_add,
             action = { showManualVitalEntryDialog() }
-        ).also { section ->
-            vitalsPhoneDateText = section.addDateRow("スマホ側", "送信先")
-            vitalsNotionDateText = section.addDateRow("Notion側", "送信元")
+        ).also { views ->
+            vitalsNotionDateText = views.leftDateText
+            vitalsPhoneDateText = views.rightDateText
         }
-        root.addView(TextView(this).apply {
-            text = "自動同期: ${autoSyncLabel(loadAutoSyncTime())}"
-            textSize = 14f
-            setTextColor(Color.parseColor("#AAB7C4"))
-            setPadding(0, 0, 0, (4 * density).toInt())
-        })
-        root.addSummaryCard("自動同期の最終実行結果", "前回の自動同期").also { section ->
-            autoSyncResultText = section.addDateRow("最終結果", "状態")
+        root.addSummaryCard("自動同期", null).also { section ->
+            section.addStaticRow("スケジュール", autoSyncLabel(loadAutoSyncTime()))
+            autoSyncResultText = section.addDateRow("最終結果", null)
             autoSyncDetailsContainer = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 visibility = if (autoSyncDetailsExpanded) View.VISIBLE else View.GONE
             }
             section.addView(autoSyncDetailsContainer)
-            autoSyncLastSuccessText = autoSyncDetailsContainer.addDateRow("最終成功", "時刻")
-            autoSyncLastFailureText = autoSyncDetailsContainer.addDateRow("最終失敗", "時刻")
-            autoSyncFailureReasonText = autoSyncDetailsContainer.addDateRow("失敗理由", "直近")
-            autoSyncNextRunText = autoSyncDetailsContainer.addDateRow("次回予定", "WorkManager")
+            autoSyncLastSuccessText = autoSyncDetailsContainer.addDateRow("最終成功", null)
+            autoSyncLastFailureText = autoSyncDetailsContainer.addDateRow("最終失敗", null)
+            autoSyncFailureReasonText = autoSyncDetailsContainer.addDateRow("失敗理由", null)
+            autoSyncNextRunText = autoSyncDetailsContainer.addDateRow("次回予定", null)
             autoSyncDetailsToggleButton = section.addButton("") { toggleAutoSyncDetails() }.apply {
                 isAllCaps = false
                 gravity = Gravity.CENTER
@@ -256,7 +265,7 @@ class MainActivity : ComponentActivity() {
         root.addSyncActions()
 
         statusText = TextView(this).apply {
-            text = "設定後に同期してください。歩数データは1日単位で合算してNotionへ同期します。"
+            text = "歩数データは1日単位で同期されます。"
             textSize = 16f
             setTextColor(Color.parseColor("#D9E3EA"))
             setPadding(0, (14 * density).toInt(), 0, 0)
@@ -370,7 +379,7 @@ class MainActivity : ComponentActivity() {
             }
         }.apply {
             isFillViewport = true
-            setBackgroundColor(Color.parseColor("#101820"))
+            background = topBackground()
             addView(root)
             setOnApplyWindowInsetsListener { _, insets ->
                 @Suppress("DEPRECATION")
@@ -391,21 +400,158 @@ class MainActivity : ComponentActivity() {
             contentDescription = "設定"
             tooltipText = "設定"
             setImageResource(R.drawable.ic_settings)
-            imageTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#081018"))
+            imageTintList = android.content.res.ColorStateList.valueOf(Color.WHITE)
             background = GradientDrawable().apply {
-                cornerRadius = 10 * density
-                setColor(Color.parseColor("#D9E3EA"))
+                cornerRadius = 14 * density
+                setColor(Color.parseColor("#172633"))
+                setStroke((1 * density).toInt(), Color.parseColor("#2E4656"))
             }
             scaleType = android.widget.ImageView.ScaleType.CENTER
-            layoutParams = LinearLayout.LayoutParams((56 * density).toInt(), (48 * density).toInt()).apply {
+            layoutParams = LinearLayout.LayoutParams((54 * density).toInt(), (54 * density).toInt()).apply {
                 leftMargin = (12 * density).toInt()
             }
         }
     }
 
+    private fun topBackground(): GradientDrawable =
+        GradientDrawable(
+            GradientDrawable.Orientation.TL_BR,
+            intArrayOf(
+                Color.parseColor("#071118"),
+                Color.parseColor("#101C25"),
+                Color.parseColor("#081018")
+            )
+        )
+
+    private fun cardBackground(): GradientDrawable {
+        val density = resources.displayMetrics.density
+        return GradientDrawable(
+            GradientDrawable.Orientation.TL_BR,
+            intArrayOf(Color.parseColor("#14232E"), Color.parseColor("#101A23"))
+        ).apply {
+            cornerRadius = 16 * density
+            setStroke((1 * density).toInt(), Color.parseColor("#2C4150"))
+        }
+    }
+
+    private fun LinearLayout.addSyncStatusCard(
+        title: String,
+        iconResId: Int,
+        leftLabel: String,
+        leftIconResId: Int,
+        rightLabel: String,
+        rightIconResId: Int,
+        directionIconResId: Int,
+        actionDescription: String? = null,
+        actionIconResId: Int? = null,
+        action: (() -> Unit)? = null
+    ): SyncStatusCardViews {
+        val density = resources.displayMetrics.density
+        val card = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding((16 * density).toInt(), (16 * density).toInt(), (16 * density).toInt(), (18 * density).toInt())
+            background = cardBackground()
+            layoutParams = ViewGroup.MarginLayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                bottomMargin = (14 * density).toInt()
+            }
+        }
+
+        val header = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        header.addView(ImageView(context).apply {
+            setImageResource(iconResId)
+            imageTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#44D7B6"))
+            layoutParams = LinearLayout.LayoutParams((28 * density).toInt(), (28 * density).toInt()).apply {
+                rightMargin = (10 * density).toInt()
+            }
+        })
+        header.addView(TextView(context).apply {
+            text = title
+            textSize = 20f
+            setTextColor(Color.WHITE)
+            typeface = Typeface.DEFAULT_BOLD
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        if (actionDescription != null && actionIconResId != null && action != null) {
+            header.addView(createCardIconButton(actionDescription, actionIconResId, action))
+        }
+        card.addView(header)
+
+        val body = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            setPadding(0, (22 * density).toInt(), 0, 0)
+        }
+        val leftDate = body.addEndpoint(leftLabel, leftIconResId)
+        body.addView(LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 0.5f).apply {
+                leftMargin = (4 * density).toInt()
+                rightMargin = (4 * density).toInt()
+            }
+            addView(ImageView(context).apply {
+                setImageResource(directionIconResId)
+                imageTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#44D7B6"))
+                layoutParams = LinearLayout.LayoutParams((74 * density).toInt(), (26 * density).toInt())
+            })
+        })
+        val rightDate = body.addEndpoint(rightLabel, rightIconResId)
+        card.addView(body)
+        addView(card)
+        return SyncStatusCardViews(leftDate, rightDate)
+    }
+
+    private fun LinearLayout.addEndpoint(label: String, iconResId: Int): TextView {
+        val density = resources.displayMetrics.density
+        val column = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        column.addView(ImageView(context).apply {
+            setImageResource(iconResId)
+            imageTintList = android.content.res.ColorStateList.valueOf(
+                if (iconResId == R.drawable.ic_phone) Color.WHITE else Color.parseColor("#081018")
+            )
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(if (iconResId == R.drawable.ic_phone) Color.parseColor("#44D7B6") else Color.WHITE)
+                setStroke((3 * density).toInt(), Color.parseColor("#203642"))
+            }
+            setPadding((18 * density).toInt(), (18 * density).toInt(), (18 * density).toInt(), (18 * density).toInt())
+            layoutParams = LinearLayout.LayoutParams((80 * density).toInt(), (80 * density).toInt())
+        })
+        column.addView(TextView(context).apply {
+            text = label
+            textSize = 17f
+            setTextColor(Color.WHITE)
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            setPadding(0, (10 * density).toInt(), 0, 0)
+        })
+        val dateText = TextView(context).apply {
+            text = "確認中..."
+            textSize = 12.5f
+            setTextColor(Color.parseColor("#44D7B6"))
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            setSingleLine(true)
+            setPadding(0, (4 * density).toInt(), 0, 0)
+        }
+        column.addView(dateText)
+        addView(column)
+        return dateText
+    }
+
     private fun LinearLayout.addSummaryCard(
         title: String,
-        direction: String,
+        direction: String?,
         actionDescription: String? = null,
         actionIconResId: Int? = null,
         action: (() -> Unit)? = null
@@ -414,16 +560,12 @@ class MainActivity : ComponentActivity() {
         val card = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding((16 * density).toInt(), (14 * density).toInt(), (16 * density).toInt(), (14 * density).toInt())
-            background = GradientDrawable().apply {
-                cornerRadius = 14 * density
-                setColor(Color.parseColor("#17232D"))
-                setStroke((1 * density).toInt(), Color.parseColor("#2A3A45"))
-            }
+            background = cardBackground()
             layoutParams = ViewGroup.MarginLayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply {
-                bottomMargin = (12 * density).toInt()
+                bottomMargin = (14 * density).toInt()
             }
         }
         val header = LinearLayout(context).apply {
@@ -441,12 +583,14 @@ class MainActivity : ComponentActivity() {
             header.addView(createCardIconButton(actionDescription, actionIconResId, action))
         }
         card.addView(header)
-        card.addView(TextView(context).apply {
-            text = direction
-            textSize = 13f
-            setTextColor(Color.parseColor("#7ED7FF"))
-            setPadding(0, (4 * density).toInt(), 0, 0)
-        })
+        direction?.let {
+            card.addView(TextView(context).apply {
+                text = it
+                textSize = 13f
+                setTextColor(Color.parseColor("#7ED7FF"))
+                setPadding(0, (4 * density).toInt(), 0, 0)
+            })
+        }
         addView(card)
         return card
     }
@@ -459,11 +603,11 @@ class MainActivity : ComponentActivity() {
             setImageResource(iconResId)
             imageTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#081018"))
             background = GradientDrawable().apply {
-                cornerRadius = 10 * density
+                cornerRadius = 12 * density
                 setColor(Color.parseColor("#44D7B6"))
             }
             scaleType = android.widget.ImageView.ScaleType.CENTER
-            layoutParams = LinearLayout.LayoutParams((44 * density).toInt(), (40 * density).toInt()).apply {
+            layoutParams = LinearLayout.LayoutParams((44 * density).toInt(), (44 * density).toInt()).apply {
                 leftMargin = (12 * density).toInt()
             }
             setOnClickListener { onClick() }
@@ -525,16 +669,12 @@ class MainActivity : ComponentActivity() {
         val card = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding((16 * density).toInt(), (14 * density).toInt(), (16 * density).toInt(), (14 * density).toInt())
-            background = GradientDrawable().apply {
-                cornerRadius = 14 * density
-                setColor(Color.parseColor("#17232D"))
-                setStroke((1 * density).toInt(), Color.parseColor("#2A3A45"))
-            }
+            background = cardBackground()
             layoutParams = ViewGroup.MarginLayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply {
-                bottomMargin = (12 * density).toInt()
+                bottomMargin = (14 * density).toInt()
             }
         }
         card.addView(TextView(context).apply {
@@ -555,22 +695,26 @@ class MainActivity : ComponentActivity() {
         addView(card)
     }
 
-    private fun LinearLayout.addDateRow(label: String, role: String): TextView {
+    private fun LinearLayout.addStaticRow(label: String, valueText: String) {
+        addDateRow(label, null).text = valueText
+    }
+
+    private fun LinearLayout.addDateRow(label: String, role: String?): TextView {
         val density = resources.displayMetrics.density
         val row = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, (10 * density).toInt(), 0, 0)
+            setPadding(0, (14 * density).toInt(), 0, 0)
         }
         row.addView(TextView(context).apply {
-            text = "$label（$role）"
+            text = role?.let { "$label（$it）" } ?: label
             textSize = 14f
             setTextColor(Color.parseColor("#AAB7C4"))
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         })
         val value = TextView(context).apply {
             text = "確認中..."
-            textSize = 18f
+            textSize = 20f
             setTextColor(Color.parseColor("#44D7B6"))
             typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.END
@@ -656,8 +800,11 @@ class MainActivity : ComponentActivity() {
         val cornerRadius = 10 * density
         return Button(this).apply {
             text = label
+            textSize = 16f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.parseColor("#081018"))
+            minHeight = (52 * density).toInt()
+            isAllCaps = false
             background = GradientDrawable().apply {
                 cornerRadii = floatArrayOf(
                     cornerRadius,
@@ -847,6 +994,15 @@ class MainActivity : ComponentActivity() {
         val autoSyncTime = loadAutoSyncTime()
         val status = loadAutoSyncStatus(this)
         autoSyncResultText.text = status.topResultLabel()
+        autoSyncResultText.setCompoundDrawablesWithIntrinsicBounds(
+            0,
+            0,
+            if (status.resultLabel == "成功") R.drawable.ic_check_circle else 0,
+            0
+        )
+        autoSyncResultText.compoundDrawablePadding = (8 * resources.displayMetrics.density).toInt()
+        autoSyncResultText.compoundDrawableTintList =
+            android.content.res.ColorStateList.valueOf(Color.parseColor("#44D7B6"))
         autoSyncLastSuccessText.text = displayTimestampMillis(status.lastSuccessAtMillis)
         autoSyncLastFailureText.text = displayTimestampMillis(status.lastFailureAtMillis)
         autoSyncFailureReasonText.text = status.failureReason.takeIf { it.isNotBlank() } ?: "なし"
@@ -2114,6 +2270,11 @@ private data class UpdateNoticeViews(
     val card: LinearLayout,
     val message: TextView,
     val downloadButton: Button
+)
+
+private data class SyncStatusCardViews(
+    val leftDateText: TextView,
+    val rightDateText: TextView
 )
 
 private data class SyncConfig(
