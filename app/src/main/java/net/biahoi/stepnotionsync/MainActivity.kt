@@ -218,6 +218,9 @@ class MainActivity : ComponentActivity() {
             rightLabel = "Notion",
             rightIconResId = R.drawable.ic_notion,
             directionIconResId = R.drawable.ic_arrow_right,
+            actionLabel = "すぐに同期",
+            actionDescription = "歩数をすぐに同期",
+            action = { syncStepsToNotion() },
         ).also { views ->
             stepsPhoneDateText = views.leftDateText
             stepsNotionDateText = views.rightDateText
@@ -229,15 +232,22 @@ class MainActivity : ComponentActivity() {
             leftIconResId = R.drawable.ic_notion,
             rightLabel = "スマホ",
             rightIconResId = R.drawable.ic_phone,
-            directionIconResId = R.drawable.ic_arrow_left,
-            actionDescription = "バイタルをNotionに追加",
-            actionIconResId = R.drawable.ic_add,
-            action = { showManualVitalEntryDialog() }
+            directionIconResId = R.drawable.ic_arrow_right,
+            actionLabel = "すぐに同期",
+            actionDescription = "バイタルをすぐに同期",
+            action = { syncVitalsToNotion() }
         ).also { views ->
             vitalsNotionDateText = views.leftDateText
             vitalsPhoneDateText = views.rightDateText
         }
-        root.addSummaryCard("自動同期", null).also { section ->
+        root.addSummaryCard(
+            title = "自動同期",
+            direction = null,
+            iconResId = R.drawable.ic_auto_sync,
+            actionLabel = "手動同期",
+            actionDescription = "歩数とバイタルを手動同期",
+            action = { syncAllToNotion() }
+        ).also { section ->
             section.addStaticRow("スケジュール", autoSyncLabel(loadAutoSyncTime()))
             autoSyncResultText = section.addDateRow("最終結果", null)
             autoSyncDetailsContainer = LinearLayout(this).apply {
@@ -261,8 +271,6 @@ class MainActivity : ComponentActivity() {
             }
             updateAutoSyncDetailsToggleButton()
         }
-
-        root.addSyncActions()
 
         statusText = TextView(this).apply {
             text = "歩数データは1日単位で同期されます。"
@@ -442,6 +450,7 @@ class MainActivity : ComponentActivity() {
         rightLabel: String,
         rightIconResId: Int,
         directionIconResId: Int,
+        actionLabel: String? = null,
         actionDescription: String? = null,
         actionIconResId: Int? = null,
         action: (() -> Unit)? = null
@@ -477,7 +486,9 @@ class MainActivity : ComponentActivity() {
             typeface = Typeface.DEFAULT_BOLD
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         })
-        if (actionDescription != null && actionIconResId != null && action != null) {
+        if (actionLabel != null && actionDescription != null && action != null) {
+            header.addView(createCardTextButton(actionLabel, actionDescription, action))
+        } else if (actionDescription != null && actionIconResId != null && action != null) {
             header.addView(createCardIconButton(actionDescription, actionIconResId, action))
         }
         card.addView(header)
@@ -537,7 +548,7 @@ class MainActivity : ComponentActivity() {
         })
         val dateText = TextView(context).apply {
             text = "確認中..."
-            textSize = 12.5f
+            textSize = 13.5f
             setTextColor(Color.parseColor("#44D7B6"))
             typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.CENTER
@@ -552,6 +563,8 @@ class MainActivity : ComponentActivity() {
     private fun LinearLayout.addSummaryCard(
         title: String,
         direction: String?,
+        iconResId: Int? = null,
+        actionLabel: String? = null,
         actionDescription: String? = null,
         actionIconResId: Int? = null,
         action: (() -> Unit)? = null
@@ -572,6 +585,15 @@ class MainActivity : ComponentActivity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
+        if (iconResId != null) {
+            header.addView(ImageView(context).apply {
+                setImageResource(iconResId)
+                imageTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#44D7B6"))
+                layoutParams = LinearLayout.LayoutParams((28 * density).toInt(), (28 * density).toInt()).apply {
+                    rightMargin = (10 * density).toInt()
+                }
+            })
+        }
         header.addView(TextView(context).apply {
             text = title
             textSize = 18f
@@ -579,7 +601,9 @@ class MainActivity : ComponentActivity() {
             typeface = Typeface.DEFAULT_BOLD
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         })
-        if (actionDescription != null && actionIconResId != null && action != null) {
+        if (actionLabel != null && actionDescription != null && action != null) {
+            header.addView(createCardTextButton(actionLabel, actionDescription, action))
+        } else if (actionDescription != null && actionIconResId != null && action != null) {
             header.addView(createCardIconButton(actionDescription, actionIconResId, action))
         }
         card.addView(header)
@@ -593,6 +617,35 @@ class MainActivity : ComponentActivity() {
         }
         addView(card)
         return card
+    }
+
+    private fun createCardTextButton(label: String, description: String, onClick: () -> Unit): Button {
+        val density = resources.displayMetrics.density
+        return Button(this).apply {
+            text = label
+            contentDescription = description
+            tooltipText = description
+            textSize = 13f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor("#081018"))
+            minHeight = (40 * density).toInt()
+            minWidth = 0
+            minimumWidth = 0
+            isAllCaps = false
+            setPadding((14 * density).toInt(), 0, (14 * density).toInt(), 0)
+            background = GradientDrawable().apply {
+                cornerRadius = 12 * density
+                setColor(Color.parseColor("#44D7B6"))
+            }
+            backgroundTintList = null
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                (40 * density).toInt()
+            ).apply {
+                leftMargin = (12 * density).toInt()
+            }
+            setOnClickListener { onClick() }
+        }
     }
 
     private fun createCardIconButton(description: String, iconResId: Int, onClick: () -> Unit): ImageButton {
@@ -662,37 +715,6 @@ class MainActivity : ComponentActivity() {
         card.addView(button)
         addView(card)
         return UpdateNoticeViews(card, message, button)
-    }
-
-    private fun LinearLayout.addSyncActions() {
-        val density = resources.displayMetrics.density
-        val card = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding((16 * density).toInt(), (14 * density).toInt(), (16 * density).toInt(), (14 * density).toInt())
-            background = cardBackground()
-            layoutParams = ViewGroup.MarginLayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply {
-                bottomMargin = (14 * density).toInt()
-            }
-        }
-        card.addView(TextView(context).apply {
-            text = "同期"
-            textSize = 18f
-            setTextColor(Color.WHITE)
-            typeface = Typeface.DEFAULT_BOLD
-        })
-
-        val firstRow = LinearLayout(context).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        firstRow.addActionButton("歩数", R.drawable.ic_footsteps, rightMarginDp = 6) { syncStepsToNotion() }
-        firstRow.addActionButton("血圧・脈拍", R.drawable.ic_heart_pulse, leftMarginDp = 6) { syncVitalsToNotion() }
-        card.addView(firstRow)
-        card.addButton("すべて") { syncAllToNotion() }
-        addView(card)
     }
 
     private fun LinearLayout.addStaticRow(label: String, valueText: String) {
@@ -772,25 +794,6 @@ class MainActivity : ComponentActivity() {
 
     private fun LinearLayout.addButton(label: String, onClick: () -> Unit): Button {
         val button = createActionButton(label, null, onClick)
-        addView(button)
-        return button
-    }
-
-    private fun LinearLayout.addActionButton(
-        label: String,
-        iconResId: Int? = null,
-        leftMarginDp: Int = 0,
-        rightMarginDp: Int = 0,
-        onClick: () -> Unit
-    ): Button {
-        val density = resources.displayMetrics.density
-        val button = createActionButton(label, iconResId, onClick).apply {
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                leftMargin = (leftMarginDp * density).toInt()
-                rightMargin = (rightMarginDp * density).toInt()
-                topMargin = (10 * density).toInt()
-            }
-        }
         addView(button)
         return button
     }
