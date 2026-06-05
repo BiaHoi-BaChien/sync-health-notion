@@ -235,7 +235,10 @@ class MainActivity : ComponentActivity() {
             directionIconResId = R.drawable.ic_arrow_right,
             actionLabel = "すぐに同期",
             actionDescription = "バイタルをすぐに同期",
-            action = { syncVitalsToNotion() }
+            action = { syncVitalsToNotion() },
+            secondaryActionDescription = "バイタルをNotionに登録",
+            secondaryActionIconResId = R.drawable.ic_add,
+            secondaryAction = { showManualVitalEntryDialog() }
         ).also { views ->
             vitalsNotionDateText = views.leftDateText
             vitalsPhoneDateText = views.rightDateText
@@ -453,7 +456,10 @@ class MainActivity : ComponentActivity() {
         actionLabel: String? = null,
         actionDescription: String? = null,
         actionIconResId: Int? = null,
-        action: (() -> Unit)? = null
+        action: (() -> Unit)? = null,
+        secondaryActionDescription: String? = null,
+        secondaryActionIconResId: Int? = null,
+        secondaryAction: (() -> Unit)? = null
     ): SyncStatusCardViews {
         val density = resources.displayMetrics.density
         val card = LinearLayout(context).apply {
@@ -490,6 +496,9 @@ class MainActivity : ComponentActivity() {
             header.addView(createCardTextButton(actionLabel, actionDescription, action))
         } else if (actionDescription != null && actionIconResId != null && action != null) {
             header.addView(createCardIconButton(actionDescription, actionIconResId, action))
+        }
+        if (secondaryActionDescription != null && secondaryActionIconResId != null && secondaryAction != null) {
+            header.addView(createCardIconButton(secondaryActionDescription, secondaryActionIconResId, secondaryAction))
         }
         card.addView(header)
 
