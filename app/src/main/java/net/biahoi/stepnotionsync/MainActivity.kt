@@ -496,13 +496,13 @@ class MainActivity : ComponentActivity() {
             typeface = Typeface.DEFAULT_BOLD
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         })
+        if (secondaryActionDescription != null && secondaryActionIconResId != null && secondaryAction != null) {
+            header.addView(createCardIconButton(secondaryActionDescription, secondaryActionIconResId, secondaryAction))
+        }
         if (actionLabel != null && actionDescription != null && action != null) {
             header.addView(createCardTextButton(actionLabel, actionDescription, action))
         } else if (actionDescription != null && actionIconResId != null && action != null) {
             header.addView(createCardIconButton(actionDescription, actionIconResId, action))
-        }
-        if (secondaryActionDescription != null && secondaryActionIconResId != null && secondaryAction != null) {
-            header.addView(createCardIconButton(secondaryActionDescription, secondaryActionIconResId, secondaryAction))
         }
         card.addView(header)
 
