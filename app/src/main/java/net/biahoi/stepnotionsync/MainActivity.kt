@@ -3070,7 +3070,7 @@ private object GitHubReleaseClient {
                     ?: return@mapNotNull null
                 AppRelease(
                     version = version,
-                    downloadUrl = release.apkDownloadUrl() ?: release.optString("html_url")
+                    downloadUrl = release.optString("html_url")
                 )
             }
             .filter { it.downloadUrl.isNotBlank() }
@@ -3095,18 +3095,6 @@ private object GitHubReleaseClient {
         }
         return text
     }
-}
-
-private fun JSONObject.apkDownloadUrl(): String? {
-    val assets = optJSONArray("assets") ?: return null
-    for (index in 0 until assets.length()) {
-        val asset = assets.optJSONObject(index) ?: continue
-        val name = asset.optString("name")
-        if (name.endsWith(".apk", ignoreCase = true)) {
-            return asset.optString("browser_download_url").takeIf { it.isNotBlank() }
-        }
-    }
-    return null
 }
 
 private data class AppRelease(
