@@ -106,6 +106,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var autoSyncLastSuccessText: TextView
     private lateinit var autoSyncLastFailureText: TextView
     private lateinit var autoSyncFailureReasonText: TextView
+    private lateinit var autoSyncClearFailureButton: ImageButton
     private lateinit var autoSyncNextRunText: TextView
     private lateinit var tokenInput: EditText
     private lateinit var stepsDataSourceInput: EditText
@@ -261,6 +262,9 @@ class MainActivity : ComponentActivity() {
             autoSyncLastSuccessText = autoSyncDetailsContainer.addDateRow("最終成功", null)
             autoSyncLastFailureText = autoSyncDetailsContainer.addDateRow("最終失敗", null)
             autoSyncFailureReasonText = autoSyncDetailsContainer.addDateRow("失敗理由", null)
+            autoSyncClearFailureButton = autoSyncDetailsContainer.addAutoSyncFailureClearRow {
+                clearAutoSyncFailureDetails(this)
+            }
             autoSyncNextRunText = autoSyncDetailsContainer.addDateRow("次回予定", null)
             autoSyncDetailsToggleButton = section.addButton("") { toggleAutoSyncDetails() }.apply {
                 isAllCaps = false
@@ -756,6 +760,40 @@ class MainActivity : ComponentActivity() {
         return value
     }
 
+    private fun LinearLayout.addAutoSyncFailureClearRow(onClick: () -> Unit): ImageButton {
+        val density = resources.displayMetrics.density
+        val row = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, (10 * density).toInt(), 0, 0)
+        }
+        row.addView(TextView(context).apply {
+            text = "削除対象: 最終失敗・失敗理由"
+            textSize = 13f
+            setTextColor(Color.parseColor("#AAB7C4"))
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        val button = ImageButton(context).apply {
+            contentDescription = "最終失敗と失敗理由を削除"
+            tooltipText = "最終失敗と失敗理由を削除"
+            setImageResource(R.drawable.ic_trash)
+            imageTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#FFB4A8"))
+            background = GradientDrawable().apply {
+                cornerRadius = 10 * density
+                setColor(Color.parseColor("#2A1C1D"))
+                setStroke((1 * density).toInt(), Color.parseColor("#6D3B3B"))
+            }
+            scaleType = android.widget.ImageView.ScaleType.CENTER
+            layoutParams = LinearLayout.LayoutParams((40 * density).toInt(), (40 * density).toInt()).apply {
+                leftMargin = (12 * density).toInt()
+            }
+            setOnClickListener { onClick() }
+        }
+        row.addView(button)
+        addView(row)
+        return button
+    }
+
     private fun LinearLayout.addSectionTitle(title: String) {
         addView(TextView(context).apply {
             text = title
@@ -1018,6 +1056,9 @@ class MainActivity : ComponentActivity() {
         autoSyncLastSuccessText.text = displayTimestampMillis(status.lastSuccessAtMillis)
         autoSyncLastFailureText.text = displayTimestampMillis(status.lastFailureAtMillis)
         autoSyncFailureReasonText.text = status.failureReason.takeIf { it.isNotBlank() } ?: "なし"
+        val hasFailureDetails = status.lastFailureAtMillis > 0L || status.failureReason.isNotBlank()
+        autoSyncClearFailureButton.isEnabled = hasFailureDetails
+        autoSyncClearFailureButton.alpha = if (hasFailureDetails) 1f else 0.45f
         autoSyncNextRunText.text = if (autoSyncTime == AUTO_SYNC_OFF) {
             "自動同期しない"
         } else {
@@ -1059,6 +1100,12 @@ class MainActivity : ComponentActivity() {
         autoSyncDetailsToggleButton.compoundDrawablePadding = (8 * resources.displayMetrics.density).toInt()
         autoSyncDetailsToggleButton.compoundDrawableTintList =
             android.content.res.ColorStateList.valueOf(Color.parseColor("#D9E3EA"))
+    }
+
+    private fun clearAutoSyncFailureDetails(context: Context) {
+        clearAutoSyncFailureDetailsPreference(context)
+        refreshAutoSyncStatus()
+        setStatusMessage("最終失敗と失敗理由を削除しました。", floating = true)
     }
 
     private fun syncStepsToNotion() {
@@ -2369,6 +2416,14 @@ private fun recordAutoSyncFailure(context: Context, resultLabel: String, reason:
         .putString(AUTO_SYNC_RESULT_KEY, resultLabel)
         .putLong(AUTO_SYNC_LAST_FAILURE_AT_KEY, System.currentTimeMillis())
         .putString(AUTO_SYNC_FAILURE_REASON_KEY, reason.take(200))
+        .apply()
+}
+
+private fun clearAutoSyncFailureDetailsPreference(context: Context) {
+    context.getSharedPreferences("notion", Context.MODE_PRIVATE)
+        .edit()
+        .remove(AUTO_SYNC_LAST_FAILURE_AT_KEY)
+        .remove(AUTO_SYNC_FAILURE_REASON_KEY)
         .apply()
 }
 
