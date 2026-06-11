@@ -49,9 +49,9 @@ import androidx.health.connect.client.time.TimeRangeFilter
 import androidx.health.connect.client.units.Pressure
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
-import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
-import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
@@ -161,6 +161,7 @@ class MainActivity : ComponentActivity() {
                 .orEmpty()
             applyManualVitalVoiceResult(matches)
         }
+        migrateAutoSyncScheduleIfNeeded()
         showTopPage()
     }
 
@@ -961,6 +962,14 @@ class MainActivity : ComponentActivity() {
     private fun loadAutoSyncTime(): String {
         return getSharedPreferences("notion", Context.MODE_PRIVATE)
             .getString(AUTO_SYNC_TIME_KEY, AUTO_SYNC_OFF) ?: AUTO_SYNC_OFF
+    }
+
+    private fun migrateAutoSyncScheduleIfNeeded() {
+        val prefs = getSharedPreferences("notion", Context.MODE_PRIVATE)
+        if (prefs.getInt(AUTO_SYNC_SCHEDULE_VERSION_KEY, 0) >= AUTO_SYNC_SCHEDULE_VERSION) {
+            return
+        }
+        scheduleAutoSync(this, loadAutoSyncTime())
     }
 
     private fun requestHealthPermission() {
@@ -2470,13 +2479,31 @@ private fun loadSyncConfig(context: Context): SyncConfig {
 }
 
 private fun scheduleAutoSync(context: Context, autoSyncTime: String) {
+    enqueueAutoSync(context, autoSyncTime, ExistingWorkPolicy.REPLACE)
+    context.getSharedPreferences("notion", Context.MODE_PRIVATE)
+        .edit()
+        .putInt(AUTO_SYNC_SCHEDULE_VERSION_KEY, AUTO_SYNC_SCHEDULE_VERSION)
+        .apply()
+}
+
+private fun scheduleNextAutoSync(context: Context) {
+    val autoSyncTime = context.getSharedPreferences("notion", Context.MODE_PRIVATE)
+        .getString(AUTO_SYNC_TIME_KEY, AUTO_SYNC_OFF) ?: AUTO_SYNC_OFF
+    enqueueAutoSync(context, autoSyncTime, ExistingWorkPolicy.APPEND_OR_REPLACE)
+}
+
+private fun enqueueAutoSync(
+    context: Context,
+    autoSyncTime: String,
+    policy: ExistingWorkPolicy
+) {
     val workManager = WorkManager.getInstance(context.applicationContext)
     if (autoSyncTime == AUTO_SYNC_OFF) {
         workManager.cancelUniqueWork(AUTO_SYNC_WORK_NAME)
         return
     }
 
-    val request = PeriodicWorkRequestBuilder<AutoSyncWorker>(1, TimeUnit.DAYS)
+    val request = OneTimeWorkRequestBuilder<AutoSyncWorker>()
         .setInitialDelay(initialAutoSyncDelayMillis(autoSyncTime), TimeUnit.MILLISECONDS)
         .setConstraints(
             Constraints.Builder()
@@ -2484,16 +2511,18 @@ private fun scheduleAutoSync(context: Context, autoSyncTime: String) {
                 .build()
         )
         .build()
-    workManager.enqueueUniquePeriodicWork(
+    workManager.enqueueUniqueWork(
         AUTO_SYNC_WORK_NAME,
-        ExistingPeriodicWorkPolicy.UPDATE,
+        policy,
         request
     )
 }
 
-private fun initialAutoSyncDelayMillis(autoSyncTime: String): Long {
+internal fun initialAutoSyncDelayMillis(
+    autoSyncTime: String,
+    now: LocalDateTime = LocalDateTime.now()
+): Long {
     val targetTime = runCatching { LocalTime.parse(autoSyncTime) }.getOrDefault(LocalTime.MIDNIGHT)
-    val now = LocalDateTime.now()
     var nextRun = now.toLocalDate().atTime(targetTime)
     if (!nextRun.isAfter(now)) {
         nextRun = nextRun.plusDays(1)
@@ -2517,18 +2546,21 @@ class AutoSyncWorker(
         val granted = client.permissionController.getGrantedPermissions()
         if (!granted.containsAll(AUTO_SYNC_REQUIRED_PERMISSIONS)) {
             recordAutoSyncFailure(applicationContext, "失敗", "Health Connectの自動同期権限が不足しています")
-            return Result.failure()
+            scheduleNextAutoSync(applicationContext)
+            return Result.success()
         }
 
         val config = loadSyncConfig(applicationContext)
         if (!config.hasStepsSettings() && !config.hasVitalsSettings()) {
             recordAutoSyncFailure(applicationContext, "失敗", "Notion同期設定が未完了です")
-            return Result.failure()
+            scheduleNextAutoSync(applicationContext)
+            return Result.success()
         }
 
         return try {
             HealthNotionSyncEngine.syncConfigured(client, config, DEFAULT_LOOKBACK_DAYS)
             recordAutoSyncSuccess(applicationContext)
+            scheduleNextAutoSync(applicationContext)
             Result.success()
         } catch (_: CancellationException) {
             recordAutoSyncFailure(applicationContext, "再試行", "自動同期がキャンセルされました")
@@ -3024,6 +3056,8 @@ private const val GOOGLE_FIT_PACKAGE_NAME = "com.google.android.apps.fitness"
 private val GOOGLE_FIT_DATA_ORIGIN_FILTER = setOf(DataOrigin(GOOGLE_FIT_PACKAGE_NAME))
 private const val AUTO_SYNC_WORK_NAME = "health_notion_auto_sync"
 private const val AUTO_SYNC_TIME_KEY = "autoSyncTime"
+private const val AUTO_SYNC_SCHEDULE_VERSION_KEY = "autoSyncScheduleVersion"
+private const val AUTO_SYNC_SCHEDULE_VERSION = 2
 private const val AUTO_SYNC_OFF = "off"
 private const val AUTO_SYNC_RESULT_KEY = "autoSyncResult"
 private const val AUTO_SYNC_LAST_SUCCESS_AT_KEY = "autoSyncLastSuccessAt"
