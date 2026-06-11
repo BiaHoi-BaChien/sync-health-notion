@@ -36,6 +36,7 @@ The parent databases must be shared with the Notion integration. Use data source
 
 - The app reads and writes health data only after the user taps a sync button.
 - The Notion integration token is entered on the device and stored locally with Android Keystore-backed encryption.
+- Do not add the Notion integration token to Gradle properties or environment variables used at build time. Build-time values are embedded in the APK and can be extracted.
 - Use a Notion integration that is shared only with the data sources this app needs.
 - `local.properties` is local Android SDK configuration and must not be committed.
 
@@ -53,7 +54,14 @@ The debug APK is generated at:
 app\build\outputs\apk\debug\app-debug.apk
 ```
 
-Release APK builds use `keystore.properties` and `release-key.jks` when they are present locally:
+Release APK signing reads environment variables first:
+
+- `ANDROID_RELEASE_STORE_FILE`
+- `ANDROID_RELEASE_STORE_PASSWORD`
+- `ANDROID_RELEASE_KEY_ALIAS`
+- `ANDROID_RELEASE_KEY_PASSWORD`
+
+For local builds, copy `keystore.properties.example` to the gitignored `keystore.properties` and enter the local values:
 
 ```properties
 storeFile=release-key.jks
@@ -62,7 +70,7 @@ keyAlias=...
 keyPassword=...
 ```
 
-`keystore.properties` and `*.jks` are local secret files and must not be committed.
+Environment variables override matching values in `keystore.properties`. The signing configuration must contain all four values or none. `keystore.properties`, `*.jks`, `*.keystore`, `*.p12`, and `*.pfx` are local secret files and must not be committed.
 
 ## GitHub release automation
 

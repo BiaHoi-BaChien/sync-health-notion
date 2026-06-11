@@ -59,26 +59,13 @@ jobs:
           java-version: "17"
           cache: gradle
 
-      - name: Restore release signing files
+      - name: Restore release keystore
         if: steps.version_guard.outputs.should_release == 'true'
         env:
           RELEASE_KEYSTORE_BASE64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_BASE64 }}
-          RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_STORE_PASSWORD }}
-          RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
-          RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
         run: |
           test -n "$RELEASE_KEYSTORE_BASE64"
-          test -n "$RELEASE_STORE_PASSWORD"
-          test -n "$RELEASE_KEY_ALIAS"
-          test -n "$RELEASE_KEY_PASSWORD"
-
           printf '%s' "$RELEASE_KEYSTORE_BASE64" | base64 --decode > release-key.jks
-          cat > keystore.properties <<EOF
-          storeFile=release-key.jks
-          storePassword=$RELEASE_STORE_PASSWORD
-          keyAlias=$RELEASE_KEY_ALIAS
-          keyPassword=$RELEASE_KEY_PASSWORD
-          EOF
 
       - name: Make Gradle wrapper executable
         if: steps.version_guard.outputs.should_release == 'true'
@@ -86,7 +73,16 @@ jobs:
 
       - name: Build signed release APK
         if: steps.version_guard.outputs.should_release == 'true'
+        env:
+          ANDROID_RELEASE_STORE_FILE: release-key.jks
+          ANDROID_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_STORE_PASSWORD }}
+          ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
+          ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
         run: ./gradlew assembleRelease
+
+      - name: Remove release keystore
+        if: always() && steps.version_guard.outputs.should_release == 'true'
+        run: rm -f release-key.jks
 
       - name: Read release metadata
         if: steps.version_guard.outputs.should_release == 'true'

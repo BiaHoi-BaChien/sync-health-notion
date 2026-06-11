@@ -13,6 +13,18 @@ val releaseKeystoreProperties = Properties().apply {
     }
 }
 
+fun releaseSigningValue(environmentName: String, propertyName: String): String? =
+    providers.environmentVariable(environmentName).orNull
+        ?.takeIf { it.isNotBlank() }
+        ?: releaseKeystoreProperties.getProperty(propertyName)?.takeIf { it.isNotBlank() }
+
+val releaseSigningValues = mapOf(
+    "storeFile" to releaseSigningValue("ANDROID_RELEASE_STORE_FILE", "storeFile"),
+    "storePassword" to releaseSigningValue("ANDROID_RELEASE_STORE_PASSWORD", "storePassword"),
+    "keyAlias" to releaseSigningValue("ANDROID_RELEASE_KEY_ALIAS", "keyAlias"),
+    "keyPassword" to releaseSigningValue("ANDROID_RELEASE_KEY_PASSWORD", "keyPassword"),
+)
+
 fun versionCodeFrom(versionName: String): Int {
     val parts = versionName.split(".")
     require(parts.size == 3) {
@@ -35,12 +47,12 @@ fun versionCodeFrom(versionName: String): Int {
     return versionCode
 }
 
-val hasReleaseSigningConfig = listOf(
-    "storeFile",
-    "storePassword",
-    "keyAlias",
-    "keyPassword",
-).all { releaseKeystoreProperties.getProperty(it)?.isNotBlank() == true }
+val configuredReleaseSigningValues = releaseSigningValues.filterValues { it != null }
+require(configuredReleaseSigningValues.isEmpty() || configuredReleaseSigningValues.size == releaseSigningValues.size) {
+    val missingValues = releaseSigningValues.filterValues { it == null }.keys.joinToString()
+    "Release signing configuration is incomplete. Missing: $missingValues"
+}
+val hasReleaseSigningConfig = configuredReleaseSigningValues.isNotEmpty()
 
 android {
     namespace = "net.biahoi.stepnotionsync"
@@ -57,10 +69,10 @@ android {
     signingConfigs {
         if (hasReleaseSigningConfig) {
             create("release") {
-                storeFile = rootProject.file(releaseKeystoreProperties.getProperty("storeFile"))
-                storePassword = releaseKeystoreProperties.getProperty("storePassword")
-                keyAlias = releaseKeystoreProperties.getProperty("keyAlias")
-                keyPassword = releaseKeystoreProperties.getProperty("keyPassword")
+                storeFile = rootProject.file(checkNotNull(releaseSigningValues["storeFile"]))
+                storePassword = checkNotNull(releaseSigningValues["storePassword"])
+                keyAlias = checkNotNull(releaseSigningValues["keyAlias"])
+                keyPassword = checkNotNull(releaseSigningValues["keyPassword"])
             }
         }
     }
