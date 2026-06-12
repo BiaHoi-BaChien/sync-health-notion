@@ -325,7 +325,7 @@ class MainActivity : ComponentActivity() {
             setPadding(0, (4 * density).toInt(), 0, (8 * density).toInt())
         })
 
-        tokenInput = root.addInput("Notion Integration Token", password = true)
+        tokenInput = root.addInput("Notion API Token", password = true)
         root.addSectionTitle("歩数")
         stepsDataSourceInput = root.addInput("歩数 Data Source ID")
         stepsDatePropertyInput = root.addInput("歩数 Date property name")
@@ -2566,8 +2566,13 @@ class AutoSyncWorker(
             recordAutoSyncFailure(applicationContext, "再試行", "自動同期がキャンセルされました")
             Result.retry()
         } catch (e: Exception) {
-            recordAutoSyncFailure(applicationContext, "再試行", workerErrorMessage(e))
-            Result.retry()
+            val shouldRetry = (e as? NotionRequestException)?.isRetryable != false
+            recordAutoSyncFailure(
+                applicationContext,
+                if (shouldRetry) "再試行" else "失敗",
+                workerErrorMessage(e)
+            )
+            if (shouldRetry) Result.retry() else Result.failure()
         }
     }
 }
@@ -2881,6 +2886,7 @@ private class NotionClient(private val config: SyncConfig) {
                 "https://api.notion.com/v1/data_sources/${validDataSourceId(config.vitalsDataSourceId)}/query",
                 body
             )
+            ensureCompleteQuery(response)
             val results = response.optJSONArray("results") ?: JSONArray()
             for (i in 0 until results.length()) {
                 results.optJSONObject(i)?.toVitalMeasurement()?.let { measurements.add(it) }
@@ -2917,6 +2923,7 @@ private class NotionClient(private val config: SyncConfig) {
             )
             .put("page_size", 1)
         val response = request("POST", "https://api.notion.com/v1/data_sources/$dataSourceId/query", body)
+        ensureCompleteQuery(response)
         val latestStart = response.optJSONArray("results")
             ?.optJSONObject(0)
             ?.optJSONObject("properties")
@@ -2954,6 +2961,7 @@ private class NotionClient(private val config: SyncConfig) {
             cursor?.let { body.put("start_cursor", it) }
 
             val response = request("POST", "https://api.notion.com/v1/data_sources/$dataSourceId/query", body)
+            ensureCompleteQuery(response)
             val results = response.optJSONArray("results") ?: JSONArray()
             for (i in 0 until results.length()) {
                 val page = results.optJSONObject(i) ?: continue
@@ -3011,28 +3019,86 @@ private class NotionClient(private val config: SyncConfig) {
         return normalized
     }
 
-    private fun request(method: String, endpoint: String, body: JSONObject): JSONObject {
-        val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
-            requestMethod = method
-            connectTimeout = 15_000
-            readTimeout = 30_000
-            doInput = true
-            doOutput = true
-            setRequestProperty("Authorization", "Bearer ${config.token}")
-            setRequestProperty("Notion-Version", "2026-03-11")
-            setRequestProperty("Content-Type", "application/json")
-        }
-        OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { it.write(body.toString()) }
-
-        val status = connection.responseCode
-        val stream = if (status in 200..299) connection.inputStream else connection.errorStream
-        val text = BufferedReader(InputStreamReader(stream, Charsets.UTF_8)).use { it.readText() }
-        if (status !in 200..299) {
-            val message = runCatching { JSONObject(text).optString("message") }.getOrNull()
-            throw NotionRequestException(status, message)
-        }
-        return if (text.isBlank()) JSONObject() else JSONObject(text)
+    private fun ensureCompleteQuery(response: JSONObject) {
+        val requestStatus = response.optJSONObject("request_status") ?: return
+        val type = requestStatus.optString("type")
+        val reason = requestStatus.optString("incomplete_reason")
+        incompleteQueryError(type, reason)?.let { throw IllegalStateException(it) }
     }
+
+    private fun request(method: String, endpoint: String, body: JSONObject): JSONObject {
+        repeat(NOTION_MAX_REQUEST_ATTEMPTS) { attempt ->
+            val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+                requestMethod = method
+                connectTimeout = 15_000
+                readTimeout = 30_000
+                doInput = true
+                doOutput = true
+                setRequestProperty("Authorization", "Bearer ${config.token}")
+                setRequestProperty("Notion-Version", NOTION_API_VERSION)
+                setRequestProperty("Content-Type", "application/json")
+            }
+            try {
+                OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { it.write(body.toString()) }
+
+                val status = connection.responseCode
+                val stream = if (status in 200..299) connection.inputStream else connection.errorStream
+                val text = stream?.let {
+                    BufferedReader(InputStreamReader(it, Charsets.UTF_8)).use { reader -> reader.readText() }
+                }.orEmpty()
+                if (status in 200..299) {
+                    return if (text.isBlank()) JSONObject() else JSONObject(text)
+                }
+
+                val errorBody = runCatching { JSONObject(text) }.getOrNull()
+                val delayMillis = notionRetryDelayMillis(
+                    status = status,
+                    retryAfterSeconds = connection.getHeaderField("Retry-After"),
+                    completedAttempts = attempt
+                )
+                if (delayMillis != null && attempt < NOTION_MAX_REQUEST_ATTEMPTS - 1) {
+                    Thread.sleep(delayMillis)
+                    return@repeat
+                }
+
+                throw NotionRequestException(
+                    status = status,
+                    notionCode = errorBody?.optString("code"),
+                    notionMessage = errorBody?.optString("message"),
+                    requestId = errorBody?.optString("request_id")
+                )
+            } finally {
+                connection.disconnect()
+            }
+        }
+        error("Notion API request exhausted retries")
+    }
+}
+
+internal fun incompleteQueryError(type: String?, reason: String?): String? {
+    if (type != "incomplete") {
+        return null
+    }
+    val detail = reason?.takeIf { it.isNotBlank() } ?: "unknown"
+    return "Notion APIの検索結果が不完全です($detail)。同期範囲を短くしてください。"
+}
+
+internal fun notionRetryDelayMillis(
+    status: Int,
+    retryAfterSeconds: String?,
+    completedAttempts: Int
+): Long? {
+    if (status !in NOTION_RETRYABLE_STATUS_CODES) {
+        return null
+    }
+    val retryAfterMillis = retryAfterSeconds
+        ?.trim()
+        ?.toLongOrNull()
+        ?.coerceAtLeast(0L)
+        ?.times(1_000L)
+    return retryAfterMillis?.coerceAtMost(NOTION_MAX_RETRY_DELAY_MILLIS)
+        ?: (NOTION_INITIAL_RETRY_DELAY_MILLIS shl completedAttempts)
+            .coerceAtMost(NOTION_MAX_RETRY_DELAY_MILLIS)
 }
 
 private fun JSONObject.notionNumber(property: String): Double? =
@@ -3064,6 +3130,11 @@ private const val AUTO_SYNC_LAST_SUCCESS_AT_KEY = "autoSyncLastSuccessAt"
 private const val AUTO_SYNC_LAST_FAILURE_AT_KEY = "autoSyncLastFailureAt"
 private const val AUTO_SYNC_FAILURE_REASON_KEY = "autoSyncFailureReason"
 private const val DEFAULT_LOOKBACK_DAYS = 30L
+private const val NOTION_API_VERSION = "2026-03-11"
+private const val NOTION_MAX_REQUEST_ATTEMPTS = 3
+private const val NOTION_INITIAL_RETRY_DELAY_MILLIS = 500L
+private const val NOTION_MAX_RETRY_DELAY_MILLIS = 60_000L
+private val NOTION_RETRYABLE_STATUS_CODES = setOf(409, 429, 500, 502, 503, 504, 529)
 private const val MANUAL_VITAL_FIELD_COUNT = 3
 private const val MIN_MANUAL_VITAL_DIGITS_PER_COMPACT_VALUE = 2
 private const val MAX_MANUAL_VITAL_DIGITS_PER_COMPACT_VALUE = 3
@@ -3137,19 +3208,38 @@ private data class AppRelease(
 )
 
 private class NotionRequestException(
-    status: Int,
-    private val notionMessage: String?
+    private val status: Int,
+    private val notionCode: String?,
+    private val notionMessage: String?,
+    private val requestId: String?
 ) : RuntimeException("Notion API request failed with HTTP $status") {
+    val isRetryable: Boolean = status in NOTION_RETRYABLE_STATUS_CODES
+
     val userMessage: String = buildString {
-        append("Notion APIのリクエストに失敗しました(HTTP ")
-        append(status)
-        append(")")
+        append(
+            when (status) {
+                401 -> "Notion API Tokenが無効です"
+                403 -> "Notion API Tokenに必要な権限がありません"
+                404 -> "Data Sourceが見つからないか、Tokenに共有されていません"
+                429, 529 -> "Notion APIが混雑しています。時間を置いて再実行してください"
+                else -> "Notion APIのリクエストに失敗しました(HTTP $status)"
+            }
+        )
         val publicMessage = notionMessage
             ?.takeIf { it.isNotBlank() }
             ?.take(120)
         if (publicMessage != null) {
             append(": ")
             append(publicMessage)
+        }
+        notionCode?.takeIf { it.isNotBlank() }?.let {
+            append(" [")
+            append(it)
+            append("]")
+        }
+        requestId?.takeIf { it.isNotBlank() }?.let {
+            append(" request_id=")
+            append(it)
         }
     }
 }
