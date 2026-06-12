@@ -10,7 +10,7 @@ Android app for Pixel devices that syncs step and vital data between Health Conn
 - Includes today's step and vital data in sync.
 - Shows the latest phone-side and Notion-side timestamps for step and vital data on the top page.
 - Syncs only when the user taps `歩数データを同期`, `血圧・心拍データを同期`, or `すべて同期`.
-- Stores the Notion integration token locally using Android Keystore-backed encryption.
+- Stores the Notion API token locally using Android Keystore-backed encryption.
 - Stores data source IDs and property names locally on the device.
 - Uses the latest 30 days as the sync window for Health Connect step data and Notion vital data.
 
@@ -30,14 +30,14 @@ The blood pressure data source must have:
 - A number property, default name: `拡張期`
 - A number property, default name: `脈拍`
 
-The parent databases must be shared with the Notion integration. Use data source IDs, not database IDs.
+Use either an internal connection token or a personal access token (PAT). Internal connections must be shared with the parent databases. PATs use the permissions of the Notion user who created them. Use data source IDs, not database IDs.
 
 ## Security notes
 
 - The app reads and writes health data only after the user taps a sync button.
-- The Notion integration token is entered on the device and stored locally with Android Keystore-backed encryption.
-- Do not add the Notion integration token to Gradle properties or environment variables used at build time. Build-time values are embedded in the APK and can be extracted.
-- Use a Notion integration that is shared only with the data sources this app needs.
+- The Notion API token is entered on the device and stored locally with Android Keystore-backed encryption.
+- Do not add the Notion API token to Gradle properties or environment variables used at build time. Build-time values are embedded in the APK and can be extracted.
+- Prefer a dedicated internal connection shared only with the data sources this app needs. A PAT is also supported for a trusted personal device.
 - `local.properties` is local Android SDK configuration and must not be committed.
 
 ## Build
