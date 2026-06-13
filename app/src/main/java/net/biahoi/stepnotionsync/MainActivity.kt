@@ -92,6 +92,7 @@ class MainActivity : ComponentActivity() {
         HealthPermission.getWritePermission(HeartRateRecord::class),
         HealthPermission.PERMISSION_READ_HEALTH_DATA_IN_BACKGROUND
     )
+    private var requestedHealthPermissions: Set<String> = requiredPermissions
     private lateinit var permissionLauncher: ActivityResultLauncher<Set<String>>
     private lateinit var voicePermissionLauncher: ActivityResultLauncher<String>
     private lateinit var voiceInputLauncher: ActivityResultLauncher<Intent>
@@ -133,10 +134,10 @@ class MainActivity : ComponentActivity() {
         permissionLauncher = registerForActivityResult(
             PermissionController.createRequestPermissionResultContract()
         ) { granted ->
-            val message = if (granted.containsAll(requiredPermissions)) {
+            val message = if (granted.containsAll(requestedHealthPermissions)) {
                 "Health Connectの権限が許可されました。"
             } else {
-                "最新日付の表示にはHealth Connectの歩数、血圧、心拍の読み取り権限が必要です。"
+                "Health Connectの必要な権限を許可してください。"
             }
             setStatusMessage(message, floating = true)
             refreshLatestDates()
@@ -230,20 +231,20 @@ class MainActivity : ComponentActivity() {
         root.addSyncStatusCard(
             title = "バイタル",
             iconResId = R.drawable.ic_heart_pulse,
-            leftLabel = "Notion",
-            leftIconResId = R.drawable.ic_notion,
-            rightLabel = "スマホ",
-            rightIconResId = R.drawable.ic_phone,
+            leftLabel = "スマホ",
+            leftIconResId = R.drawable.ic_phone,
+            rightLabel = "Notion",
+            rightIconResId = R.drawable.ic_notion,
             directionIconResId = R.drawable.ic_arrow_right,
             actionLabel = "すぐに同期",
             actionDescription = "バイタルをすぐに同期",
             action = { syncVitalsToNotion() },
-            secondaryActionDescription = "バイタルをNotionに登録",
+            secondaryActionDescription = "バイタルをHealth Connectに登録",
             secondaryActionIconResId = R.drawable.ic_add,
             secondaryAction = { showManualVitalEntryDialog() }
         ).also { views ->
-            vitalsNotionDateText = views.leftDateText
-            vitalsPhoneDateText = views.rightDateText
+            vitalsPhoneDateText = views.leftDateText
+            vitalsNotionDateText = views.rightDateText
         }
         root.addSummaryCard(
             title = "自動同期",
@@ -1126,7 +1127,8 @@ class MainActivity : ComponentActivity() {
 
         startSync(
             syncMessage = "歩数データを同期中...",
-            failurePrefix = "歩数データの同期に失敗しました"
+            failurePrefix = "歩数データの同期に失敗しました",
+            requiredHealthPermissions = STEPS_SYNC_REQUIRED_PERMISSIONS
         ) { client ->
             val synced = syncUnsyncedSteps(client, config)
             "歩数データを${synced}件同期しました。"
@@ -1204,7 +1206,8 @@ class MainActivity : ComponentActivity() {
 
         startSync(
             syncMessage = "血圧・心拍データを同期中...",
-            failurePrefix = "血圧・心拍データの同期に失敗しました"
+            failurePrefix = "血圧・心拍データの同期に失敗しました",
+            requiredHealthPermissions = VITALS_SYNC_REQUIRED_PERMISSIONS
         ) { client ->
             val synced = syncUnsyncedVitals(client, config)
             "血圧・心拍データを${synced}件同期しました。"
@@ -1212,11 +1215,6 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showManualVitalEntryDialog() {
-        val config = currentConfig()
-        if (!config.hasVitalsSettings()) {
-            setStatusMessage("血圧・心拍データのNotion設定を入力してください。", floating = true)
-            return
-        }
         if (currentSyncJob?.isActive == true) {
             setStatusMessage("同期中はバイタルを登録できません。", floating = true)
             return
@@ -1255,7 +1253,7 @@ class MainActivity : ComponentActivity() {
             )
         }
         titleRow.addView(TextView(this).apply {
-            text = "バイタルをNotionに登録"
+            text = "バイタルをHealth Connectに登録"
             textSize = 20f
             setTextColor(Color.WHITE)
             typeface = Typeface.DEFAULT_BOLD
@@ -1320,7 +1318,7 @@ class MainActivity : ComponentActivity() {
             setOnClickListener { dialog.dismiss() }
         })
         buttons.addView(Button(this).apply {
-            text = "Notionに登録"
+            text = "Health Connectに登録"
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.parseColor("#081018"))
             background = GradientDrawable().apply {
@@ -1343,7 +1341,7 @@ class MainActivity : ComponentActivity() {
                     return@setOnClickListener
                 }
                 dialog.dismiss()
-                registerManualVitalToNotion(config, measurement)
+                registerManualVitalToHealthConnect(measurement)
             }
         })
         panel.addView(buttons)
@@ -1548,20 +1546,21 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun registerManualVitalToNotion(config: SyncConfig, measurement: VitalMeasurement) {
+    private fun registerManualVitalToHealthConnect(measurement: VitalMeasurement) {
         if (currentSyncJob?.isActive == true) {
             return
         }
 
-        val message = "バイタルをNotionに登録中..."
+        val message = "バイタルをHealth Connectに登録中..."
         setStatusMessage(message)
         showSyncDialog(message)
         currentSyncJob = CoroutineScope(Dispatchers.Main).launch {
             try {
+                val client = checkedHealthClient(MANUAL_VITAL_REQUIRED_PERMISSIONS) ?: return@launch
                 withContext(Dispatchers.IO) {
-                    NotionClient(config).createVitalPage(measurement)
+                    client.insertRecords(measurement.toHealthConnectRecords())
                 }
-                setStatusMessage("バイタルをNotionに登録しました。", floating = true)
+                setStatusMessage("バイタルをHealth Connectに登録しました。", floating = true)
                 refreshLatestDates()
             } catch (e: Exception) {
                 setStatusMessage("バイタルの登録に失敗しました: ${safeErrorMessage(e)}", floating = true)
@@ -1581,7 +1580,8 @@ class MainActivity : ComponentActivity() {
 
         startSync(
             syncMessage = "すべてのデータを同期中...",
-            failurePrefix = "同期に失敗しました"
+            failurePrefix = "同期に失敗しました",
+            requiredHealthPermissions = ALL_SYNC_REQUIRED_PERMISSIONS
         ) { client ->
             val steps = syncUnsyncedSteps(client, config)
             val vitals = syncUnsyncedVitals(client, config)
@@ -1592,6 +1592,7 @@ class MainActivity : ComponentActivity() {
     private fun startSync(
         syncMessage: String,
         failurePrefix: String,
+        requiredHealthPermissions: Set<String>,
         sync: suspend (HealthConnectClient) -> String
     ) {
         if (currentSyncJob?.isActive == true) {
@@ -1602,7 +1603,7 @@ class MainActivity : ComponentActivity() {
         showSyncDialog(syncMessage)
         currentSyncJob = CoroutineScope(Dispatchers.Main).launch {
             try {
-                val client = checkedHealthClient() ?: return@launch
+                val client = checkedHealthClient(requiredHealthPermissions) ?: return@launch
                 val resultMessage = withContext(Dispatchers.IO) { sync(client) }
                 setStatusMessage(resultMessage, floating = true)
                 refreshLatestDates()
@@ -2109,15 +2110,18 @@ class MainActivity : ComponentActivity() {
         return value
     }
 
-    private suspend fun checkedHealthClient(): HealthConnectClient? {
+    private suspend fun checkedHealthClient(
+        permissions: Set<String> = requiredPermissions
+    ): HealthConnectClient? {
         val client = healthConnectClientOrNull()
         if (client == null) {
             setStatusMessage("Health Connectが利用できません。", floating = true)
             return null
         }
         val granted = client.permissionController.getGrantedPermissions()
-        if (!granted.containsAll(requiredPermissions)) {
-            permissionLauncher.launch(requiredPermissions)
+        if (!granted.containsAll(permissions)) {
+            requestedHealthPermissions = permissions
+            permissionLauncher.launch(permissions)
             setStatusMessage("Health Connectの権限を許可してから再度実行してください。", floating = true)
             return null
         }
@@ -2543,16 +2547,25 @@ class AutoSyncWorker(
             }
         }
 
-        val granted = client.permissionController.getGrantedPermissions()
-        if (!granted.containsAll(AUTO_SYNC_REQUIRED_PERMISSIONS)) {
-            recordAutoSyncFailure(applicationContext, "失敗", "Health Connectの自動同期権限が不足しています")
+        val config = loadSyncConfig(applicationContext)
+        if (!config.hasStepsSettings() && !config.hasVitalsSettings()) {
+            recordAutoSyncFailure(applicationContext, "失敗", "Notion同期設定が未完了です")
             scheduleNextAutoSync(applicationContext)
             return Result.success()
         }
 
-        val config = loadSyncConfig(applicationContext)
-        if (!config.hasStepsSettings() && !config.hasVitalsSettings()) {
-            recordAutoSyncFailure(applicationContext, "失敗", "Notion同期設定が未完了です")
+        val requiredPermissions = buildSet {
+            add(HealthPermission.PERMISSION_READ_HEALTH_DATA_IN_BACKGROUND)
+            if (config.hasStepsSettings()) {
+                addAll(STEPS_SYNC_REQUIRED_PERMISSIONS)
+            }
+            if (config.hasVitalsSettings()) {
+                addAll(VITALS_SYNC_REQUIRED_PERMISSIONS)
+            }
+        }
+        val granted = client.permissionController.getGrantedPermissions()
+        if (!granted.containsAll(requiredPermissions)) {
+            recordAutoSyncFailure(applicationContext, "失敗", "Health Connectの自動同期権限が不足しています")
             scheduleNextAutoSync(applicationContext)
             return Result.success()
         }
@@ -2606,20 +2619,18 @@ private object HealthNotionSyncEngine {
 
     suspend fun syncVitals(client: HealthConnectClient, config: SyncConfig, lookbackDays: Long): Int {
         val notion = NotionClient(config)
-        val notionMeasurements = notion.readVitalMeasurements(lookbackDays)
-        val existingTimes = readVitalMeasurementTimes(client, lookbackDays)
-        val recordsToInsert = notionMeasurements.flatMap { measurement ->
-            measurement.toMissingHealthConnectRecords(existingTimes)
+        val existingTimes = notion.readVitalMeasurementTimes(lookbackDays)
+        val measurements = selectUnsyncedVitalMeasurements(
+            readVitalMeasurements(client, lookbackDays),
+            existingTimes
+        )
+        var synced = 0
+        for (measurement in measurements) {
+            coroutineContext.ensureActive()
+            notion.createVitalPage(measurement)
+            synced++
         }
-        coroutineContext.ensureActive()
-        if (recordsToInsert.isEmpty()) {
-            return 0
-        }
-
-        client.insertRecords(recordsToInsert)
-        return notionMeasurements.count { measurement ->
-            measurement.needsHealthConnectInsert(existingTimes)
-        }
+        return synced
     }
 
     private suspend fun readDailyStepMeasurements(
@@ -2676,29 +2687,39 @@ private object HealthNotionSyncEngine {
         }.sortedBy { it.date }
     }
 
-    private suspend fun readVitalMeasurementTimes(
+    private suspend fun readVitalMeasurements(
         client: HealthConnectClient,
         lookbackDays: Long
-    ): ExistingVitalMeasurementTimes {
+    ): List<VitalMeasurement> {
         val zone = ZoneId.systemDefault()
-        val today = LocalDate.now()
+        val today = LocalDate.now(zone)
         val start = today.minusDays(lookbackDays).atStartOfDay(zone).toInstant()
         val end = today.plusDays(1).atStartOfDay(zone).toInstant()
-        val bloodPressureTimes = client.readRecords(
+        val bloodPressures = client.readRecords(
             ReadRecordsRequest(
                 recordType = BloodPressureRecord::class,
-                timeRangeFilter = TimeRangeFilter.between(start, end)
+                timeRangeFilter = TimeRangeFilter.between(start, end),
+                ascendingOrder = true,
+                pageSize = 5000
             )
-        ).records.mapTo(mutableSetOf()) { it.time }
-        val heartRateTimes = client.readRecords(
+        ).records
+        val heartRateSamples = client.readRecords(
             ReadRecordsRequest(
                 recordType = HeartRateRecord::class,
-                timeRangeFilter = TimeRangeFilter.between(start, end)
+                timeRangeFilter = TimeRangeFilter.between(start, end),
+                ascendingOrder = true,
+                pageSize = 5000
             )
-        ).records.flatMapTo(mutableSetOf()) { record -> record.samples.map { it.time } }
-        return ExistingVitalMeasurementTimes(
-            bloodPressureTimes = bloodPressureTimes,
-            heartRateTimes = heartRateTimes
+        ).records.flatMap { it.samples }
+        return pairVitalMeasurements(
+            bloodPressures = bloodPressures.map {
+                BloodPressureMeasurement(
+                    measuredAt = it.time,
+                    systolic = it.systolic.inMillimetersOfMercury,
+                    diastolic = it.diastolic.inMillimetersOfMercury
+                )
+            },
+            heartRatesByTime = heartRateSamples.associate { it.time to it.beatsPerMinute }
         )
     }
 }
@@ -2753,52 +2774,60 @@ private data class ManualVitalVoiceInputs(
     val heartRate: EditText
 )
 
-private data class VitalMeasurement(
+internal data class VitalMeasurement(
     val measuredAt: Instant,
     val systolic: Double,
     val diastolic: Double,
     val heartRate: Long?
 )
 
-private data class ExistingVitalMeasurementTimes(
-    val bloodPressureTimes: Set<Instant>,
-    val heartRateTimes: Set<Instant>
+internal data class BloodPressureMeasurement(
+    val measuredAt: Instant,
+    val systolic: Double,
+    val diastolic: Double
 )
 
-private fun VitalMeasurement.toMissingHealthConnectRecords(
-    existingTimes: ExistingVitalMeasurementTimes
-): List<androidx.health.connect.client.records.Record> {
-    val zoneOffset = measuredAt.atZone(ZoneId.systemDefault()).offset
-    return buildList {
-        if (measuredAt !in existingTimes.bloodPressureTimes) {
-            add(
-                BloodPressureRecord(
-                    time = measuredAt,
-                    zoneOffset = zoneOffset,
-                    metadata = Metadata.manualEntry("notion-blood-pressure-$measuredAt"),
-                    systolic = Pressure.millimetersOfMercury(systolic),
-                    diastolic = Pressure.millimetersOfMercury(diastolic)
-                )
-            )
-        }
-        if (heartRate != null && measuredAt !in existingTimes.heartRateTimes) {
-            add(
-                HeartRateRecord(
-                    startTime = measuredAt,
-                    startZoneOffset = zoneOffset,
-                    endTime = measuredAt.plusSeconds(1),
-                    endZoneOffset = zoneOffset,
-                    samples = listOf(HeartRateRecord.Sample(measuredAt, heartRate)),
-                    metadata = Metadata.manualEntry("notion-heart-rate-$measuredAt")
-                )
-            )
-        }
+internal fun pairVitalMeasurements(
+    bloodPressures: List<BloodPressureMeasurement>,
+    heartRatesByTime: Map<Instant, Long>
+): List<VitalMeasurement> =
+    bloodPressures.map { bloodPressure ->
+        VitalMeasurement(
+            measuredAt = bloodPressure.measuredAt,
+            systolic = bloodPressure.systolic,
+            diastolic = bloodPressure.diastolic,
+            heartRate = heartRatesByTime[bloodPressure.measuredAt]
+        )
     }
+
+internal fun selectUnsyncedVitalMeasurements(
+    measurements: List<VitalMeasurement>,
+    existingTimes: Set<Instant>
+): List<VitalMeasurement> {
+    val knownTimes = existingTimes.toMutableSet()
+    return measurements.filter { knownTimes.add(it.measuredAt) }
 }
 
-private fun VitalMeasurement.needsHealthConnectInsert(existingTimes: ExistingVitalMeasurementTimes): Boolean =
-    measuredAt !in existingTimes.bloodPressureTimes ||
-        (heartRate != null && measuredAt !in existingTimes.heartRateTimes)
+private fun VitalMeasurement.toHealthConnectRecords(): List<androidx.health.connect.client.records.Record> {
+    val zoneOffset = measuredAt.atZone(ZoneId.systemDefault()).offset
+    return listOf(
+        BloodPressureRecord(
+            time = measuredAt,
+            zoneOffset = zoneOffset,
+            metadata = Metadata.manualEntry("manual-bp-${measuredAt.toEpochMilli()}"),
+            systolic = Pressure.millimetersOfMercury(systolic),
+            diastolic = Pressure.millimetersOfMercury(diastolic)
+        ),
+        HeartRateRecord(
+            startTime = measuredAt,
+            startZoneOffset = zoneOffset,
+            endTime = measuredAt.plusSeconds(1),
+            endZoneOffset = zoneOffset,
+            samples = listOf(HeartRateRecord.Sample(measuredAt, checkNotNull(heartRate))),
+            metadata = Metadata.manualEntry("manual-hr-${measuredAt.toEpochMilli()}")
+        )
+    )
+}
 
 private class NotionClient(private val config: SyncConfig) {
     fun latestStepsDate(lookbackDays: Long): NotionDateValue? =
@@ -2856,15 +2885,18 @@ private class NotionClient(private val config: SyncConfig) {
             )
             .put(config.systolicProperty, JSONObject().put("number", measurement.systolic))
             .put(config.diastolicProperty, JSONObject().put("number", measurement.diastolic))
-            .put(config.heartRateProperty, JSONObject().put("number", measurement.heartRate))
+            .put(
+                config.heartRateProperty,
+                JSONObject().put("number", measurement.heartRate ?: JSONObject.NULL)
+            )
     }
 
-    fun readVitalMeasurements(lookbackDays: Long): List<VitalMeasurement> {
+    fun readVitalMeasurementTimes(lookbackDays: Long): Set<Instant> {
         val zone = ZoneId.systemDefault()
         val today = LocalDate.now(zone)
         val windowStart = today.minusDays(lookbackDays).atStartOfDay(zone).toInstant().toNotionDateTime()
         val windowEnd = today.plusDays(1).atStartOfDay(zone).toInstant().toNotionDateTime()
-        val measurements = mutableListOf<VitalMeasurement>()
+        val measurementTimes = mutableSetOf<Instant>()
         var cursor: String? = null
 
         do {
@@ -2889,14 +2921,21 @@ private class NotionClient(private val config: SyncConfig) {
             ensureCompleteQuery(response)
             val results = response.optJSONArray("results") ?: JSONArray()
             for (i in 0 until results.length()) {
-                results.optJSONObject(i)?.toVitalMeasurement()?.let { measurements.add(it) }
+                results.optJSONObject(i)
+                    ?.optJSONObject("properties")
+                    ?.optJSONObject(config.vitalsMeasuredAtProperty)
+                    ?.optJSONObject("date")
+                    ?.optString("start")
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { runCatching { Instant.parse(it) }.getOrNull() }
+                    ?.let { measurementTimes.add(it) }
             }
             cursor = response.optString("next_cursor").takeIf {
                 response.optBoolean("has_more") && it.isNotBlank()
             }
         } while (cursor != null)
 
-        return measurements.sortedBy { it.measuredAt }
+        return measurementTimes
     }
 
     private fun latestDateInSyncWindow(dataSourceId: String, dateProperty: String, lookbackDays: Long): NotionDateValue? {
@@ -2985,24 +3024,6 @@ private class NotionClient(private val config: SyncConfig) {
         } while (cursor != null)
 
         return pages
-    }
-
-    private fun JSONObject.toVitalMeasurement(): VitalMeasurement? {
-        val properties = optJSONObject("properties") ?: return null
-        val measuredAt = properties.optJSONObject(config.vitalsMeasuredAtProperty)
-            ?.optJSONObject("date")
-            ?.optString("start")
-            ?.takeIf { it.isNotBlank() }
-            ?.let { runCatching { Instant.parse(it) }.getOrNull() }
-            ?: return null
-        val systolic = properties.notionNumber(config.systolicProperty) ?: return null
-        val diastolic = properties.notionNumber(config.diastolicProperty) ?: return null
-        return VitalMeasurement(
-            measuredAt = measuredAt,
-            systolic = systolic,
-            diastolic = diastolic,
-            heartRate = properties.notionNumber(config.heartRateProperty)?.toLong()
-        )
     }
 
     private fun dataSourceParent(dataSourceId: String): JSONObject {
@@ -3138,13 +3159,18 @@ private val NOTION_RETRYABLE_STATUS_CODES = setOf(409, 429, 500, 502, 503, 504, 
 private const val MANUAL_VITAL_FIELD_COUNT = 3
 private const val MIN_MANUAL_VITAL_DIGITS_PER_COMPACT_VALUE = 2
 private const val MAX_MANUAL_VITAL_DIGITS_PER_COMPACT_VALUE = 3
-private val AUTO_SYNC_REQUIRED_PERMISSIONS = setOf(
-    HealthPermission.getReadPermission(StepsRecord::class),
+private val STEPS_SYNC_REQUIRED_PERMISSIONS = setOf(
+    HealthPermission.getReadPermission(StepsRecord::class)
+)
+private val VITALS_SYNC_REQUIRED_PERMISSIONS = setOf(
     HealthPermission.getReadPermission(BloodPressureRecord::class),
+    HealthPermission.getReadPermission(HeartRateRecord::class)
+)
+private val ALL_SYNC_REQUIRED_PERMISSIONS =
+    STEPS_SYNC_REQUIRED_PERMISSIONS + VITALS_SYNC_REQUIRED_PERMISSIONS
+private val MANUAL_VITAL_REQUIRED_PERMISSIONS = setOf(
     HealthPermission.getWritePermission(BloodPressureRecord::class),
-    HealthPermission.getReadPermission(HeartRateRecord::class),
-    HealthPermission.getWritePermission(HeartRateRecord::class),
-    HealthPermission.PERMISSION_READ_HEALTH_DATA_IN_BACKGROUND
+    HealthPermission.getWritePermission(HeartRateRecord::class)
 )
 
 private val Int.label: String
