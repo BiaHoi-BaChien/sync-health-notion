@@ -41,12 +41,14 @@ import androidx.health.connect.client.permission.HealthPermission
 import androidx.health.connect.client.records.BloodPressureRecord
 import androidx.health.connect.client.records.HeartRateRecord
 import androidx.health.connect.client.records.StepsRecord
+import androidx.health.connect.client.records.WeightRecord
 import androidx.health.connect.client.records.metadata.DataOrigin
 import androidx.health.connect.client.records.metadata.Metadata
 import androidx.health.connect.client.request.AggregateGroupByPeriodRequest
 import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
 import androidx.health.connect.client.units.Pressure
+import androidx.health.connect.client.units.Mass
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingWorkPolicy
@@ -86,10 +88,13 @@ import kotlin.coroutines.resume
 class MainActivity : ComponentActivity() {
     private val requiredPermissions = setOf(
         HealthPermission.getReadPermission(StepsRecord::class),
+        HealthPermission.getWritePermission(StepsRecord::class),
         HealthPermission.getReadPermission(BloodPressureRecord::class),
         HealthPermission.getWritePermission(BloodPressureRecord::class),
         HealthPermission.getReadPermission(HeartRateRecord::class),
         HealthPermission.getWritePermission(HeartRateRecord::class),
+        HealthPermission.getReadPermission(WeightRecord::class),
+        HealthPermission.getWritePermission(WeightRecord::class),
         HealthPermission.PERMISSION_READ_HEALTH_DATA_IN_BACKGROUND
     )
     private var requestedHealthPermissions: Set<String> = requiredPermissions
@@ -101,6 +106,8 @@ class MainActivity : ComponentActivity() {
     private lateinit var stepsNotionDateText: TextView
     private lateinit var vitalsPhoneDateText: TextView
     private lateinit var vitalsNotionDateText: TextView
+    private lateinit var weightPhoneDateText: TextView
+    private lateinit var weightNotionDateText: TextView
     private lateinit var autoSyncResultText: TextView
     private lateinit var autoSyncDetailsToggleButton: Button
     private lateinit var autoSyncDetailsContainer: LinearLayout
@@ -118,6 +125,12 @@ class MainActivity : ComponentActivity() {
     private lateinit var systolicPropertyInput: EditText
     private lateinit var diastolicPropertyInput: EditText
     private lateinit var heartRatePropertyInput: EditText
+    private lateinit var weightDataSourceInput: EditText
+    private lateinit var weightMeasuredAtPropertyInput: EditText
+    private lateinit var weightPropertyInput: EditText
+    private lateinit var stepsDirectionSpinner: Spinner
+    private lateinit var vitalsDirectionSpinner: Spinner
+    private lateinit var weightDirectionSpinner: Spinner
     private lateinit var autoSyncSpinner: Spinner
     private var currentSyncJob: Job? = null
     private var latestDateRefreshJob: Job? = null
@@ -175,6 +188,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showTopPage() {
+        val config = currentConfig()
         val density = resources.displayMetrics.density
         val padding = (18 * density).toInt()
         val root = LinearLayout(this).apply {
@@ -216,26 +230,18 @@ class MainActivity : ComponentActivity() {
         root.addSyncStatusCard(
             title = "歩数",
             iconResId = R.drawable.ic_footsteps,
-            leftLabel = "スマホ",
-            leftIconResId = R.drawable.ic_phone,
-            rightLabel = "Notion",
-            rightIconResId = R.drawable.ic_notion,
-            directionIconResId = R.drawable.ic_arrow_right,
+            direction = config.stepsDirection,
             actionLabel = "すぐに同期",
             actionDescription = "歩数をすぐに同期",
             action = { syncStepsToNotion() },
         ).also { views ->
-            stepsPhoneDateText = views.leftDateText
-            stepsNotionDateText = views.rightDateText
+            stepsPhoneDateText = views.healthConnectDateText
+            stepsNotionDateText = views.notionDateText
         }
         root.addSyncStatusCard(
             title = "バイタル",
             iconResId = R.drawable.ic_heart_pulse,
-            leftLabel = "スマホ",
-            leftIconResId = R.drawable.ic_phone,
-            rightLabel = "Notion",
-            rightIconResId = R.drawable.ic_notion,
-            directionIconResId = R.drawable.ic_arrow_right,
+            direction = config.vitalsDirection,
             actionLabel = "すぐに同期",
             actionDescription = "バイタルをすぐに同期",
             action = { syncVitalsToNotion() },
@@ -243,15 +249,26 @@ class MainActivity : ComponentActivity() {
             secondaryActionIconResId = R.drawable.ic_add,
             secondaryAction = { showManualVitalEntryDialog() }
         ).also { views ->
-            vitalsPhoneDateText = views.leftDateText
-            vitalsNotionDateText = views.rightDateText
+            vitalsPhoneDateText = views.healthConnectDateText
+            vitalsNotionDateText = views.notionDateText
+        }
+        root.addSyncStatusCard(
+            title = "体重",
+            iconResId = R.drawable.ic_weight,
+            direction = config.weightDirection,
+            actionLabel = "すぐに同期",
+            actionDescription = "体重をすぐに同期",
+            action = { syncWeightToNotion() }
+        ).also { views ->
+            weightPhoneDateText = views.healthConnectDateText
+            weightNotionDateText = views.notionDateText
         }
         root.addSummaryCard(
             title = "自動同期",
             direction = null,
             iconResId = R.drawable.ic_auto_sync,
             actionLabel = "手動同期",
-            actionDescription = "歩数とバイタルを手動同期",
+            actionDescription = "設定済みの歩数、バイタル、体重を手動同期",
             action = { syncAllToNotion() }
         ).also { section ->
             section.addStaticRow("スケジュール", autoSyncLabel(loadAutoSyncTime()))
@@ -282,7 +299,7 @@ class MainActivity : ComponentActivity() {
         }
 
         statusText = TextView(this).apply {
-            text = "歩数データは1日単位で同期されます。"
+            text = "設定した方向に従ってデータを同期します。"
             textSize = 16f
             setTextColor(Color.parseColor("#D9E3EA"))
             setPadding(0, (14 * density).toInt(), 0, 0)
@@ -326,21 +343,71 @@ class MainActivity : ComponentActivity() {
             setPadding(0, (4 * density).toInt(), 0, (8 * density).toInt())
         })
 
+        root.addSectionTitle("共通設定")
         tokenInput = root.addInput("Notion API Token", password = true)
-        root.addSectionTitle("歩数")
-        stepsDataSourceInput = root.addInput("歩数 Data Source ID")
-        stepsDatePropertyInput = root.addInput("歩数 Date property name")
-        stepsPropertyInput = root.addInput("Steps property name")
-        root.addSectionTitle("血圧・心拍")
-        vitalsDataSourceInput = root.addInput("血圧 Data Source ID")
-        vitalsMeasuredAtPropertyInput = root.addInput("測定日時 property name")
-        systolicPropertyInput = root.addInput("最高血圧 property name")
-        diastolicPropertyInput = root.addInput("最低血圧 property name")
-        heartRatePropertyInput = root.addInput("心拍数 property name")
         root.addSectionTitle("自動同期")
         autoSyncSpinner = root.addAutoSyncSpinner()
         root.addSectionTitle("Health Connect")
         root.addButton("Health Connect権限を許可") { requestHealthPermission() }
+
+        val tabButtons = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, (18 * density).toInt(), 0, 0)
+        }
+        root.addView(tabButtons)
+        val tabContent = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        root.addView(tabContent)
+
+        val stepsTab = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        stepsDirectionSpinner = stepsTab.addSyncDirectionSpinner()
+        stepsDataSourceInput = stepsTab.addInput("歩数 Data Source ID")
+        stepsDatePropertyInput = stepsTab.addInput("歩数 Date property name")
+        stepsPropertyInput = stepsTab.addInput("Steps property name")
+        tabContent.addView(stepsTab)
+
+        val vitalsTab = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
+        vitalsDirectionSpinner = vitalsTab.addSyncDirectionSpinner()
+        vitalsDataSourceInput = vitalsTab.addInput("バイタル Data Source ID")
+        vitalsMeasuredAtPropertyInput = vitalsTab.addInput("測定日時 property name")
+        systolicPropertyInput = vitalsTab.addInput("最高血圧 property name")
+        diastolicPropertyInput = vitalsTab.addInput("最低血圧 property name")
+        heartRatePropertyInput = vitalsTab.addInput("脈拍 property name")
+        tabContent.addView(vitalsTab)
+
+        val weightTab = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
+        weightDirectionSpinner = weightTab.addSyncDirectionSpinner()
+        weightDataSourceInput = weightTab.addInput("体重 Data Source ID")
+        weightMeasuredAtPropertyInput = weightTab.addInput("体重 Date property name")
+        weightPropertyInput = weightTab.addInput("体重 property name")
+        tabContent.addView(weightTab)
+
+        val tabs = listOf(
+            SettingsTab("歩数", stepsTab),
+            SettingsTab("バイタル", vitalsTab),
+            SettingsTab("体重", weightTab)
+        )
+        tabs.forEachIndexed { index, tab ->
+            tabButtons.addView(createSettingsTabButton(tab.label).apply {
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    if (index > 0) leftMargin = (6 * density).toInt()
+                }
+                setOnClickListener {
+                    tabs.forEach { item -> item.content.visibility = if (item === tab) View.VISIBLE else View.GONE }
+                    updateSettingsTabButtons(tabButtons, index)
+                }
+            })
+        }
+        updateSettingsTabButtons(tabButtons, 0)
 
         root.addButton("設定を保存") {
             saveSettings()
@@ -454,11 +521,7 @@ class MainActivity : ComponentActivity() {
     private fun LinearLayout.addSyncStatusCard(
         title: String,
         iconResId: Int,
-        leftLabel: String,
-        leftIconResId: Int,
-        rightLabel: String,
-        rightIconResId: Int,
-        directionIconResId: Int,
+        direction: SyncDirection,
         actionLabel: String? = null,
         actionDescription: String? = null,
         actionIconResId: Int? = null,
@@ -468,10 +531,13 @@ class MainActivity : ComponentActivity() {
         secondaryAction: (() -> Unit)? = null
     ): SyncStatusCardViews {
         val density = resources.displayMetrics.density
+        val presentation = syncCardPresentation(direction)
+        val enabled = presentation.enabled
         val card = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding((16 * density).toInt(), (16 * density).toInt(), (16 * density).toInt(), (18 * density).toInt())
-            background = cardBackground()
+            background = if (enabled) cardBackground() else disabledCardBackground()
+            alpha = if (enabled) 1f else 0.62f
             layoutParams = ViewGroup.MarginLayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
@@ -501,19 +567,35 @@ class MainActivity : ComponentActivity() {
         if (secondaryActionDescription != null && secondaryActionIconResId != null && secondaryAction != null) {
             header.addView(createCardIconButton(secondaryActionDescription, secondaryActionIconResId, secondaryAction))
         }
-        if (actionLabel != null && actionDescription != null && action != null) {
+        if (actionLabel != null && actionDescription != null && action != null && enabled) {
             header.addView(createCardTextButton(actionLabel, actionDescription, action))
         } else if (actionDescription != null && actionIconResId != null && action != null) {
             header.addView(createCardIconButton(actionDescription, actionIconResId, action))
         }
         card.addView(header)
 
+        if (!enabled) {
+            card.addView(TextView(context).apply {
+                text = "同期しない"
+                textSize = 16f
+                setTextColor(Color.parseColor("#AAB7C4"))
+                typeface = Typeface.DEFAULT_BOLD
+                gravity = Gravity.CENTER
+                setPadding(0, (22 * density).toInt(), 0, (10 * density).toInt())
+            })
+        }
+
         val body = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
             setPadding(0, (22 * density).toInt(), 0, 0)
         }
-        val leftDate = body.addEndpoint(leftLabel, leftIconResId)
+        val healthConnectFirst = presentation.healthConnectFirst
+        val leftLabel = presentation.leftLabel
+        val leftIcon = if (healthConnectFirst) R.drawable.ic_phone else R.drawable.ic_notion
+        val rightLabel = presentation.rightLabel
+        val rightIcon = if (healthConnectFirst) R.drawable.ic_notion else R.drawable.ic_phone
+        val leftDate = body.addEndpoint(leftLabel, leftIcon)
         body.addView(LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
@@ -522,15 +604,30 @@ class MainActivity : ComponentActivity() {
                 rightMargin = (4 * density).toInt()
             }
             addView(ImageView(context).apply {
-                setImageResource(directionIconResId)
-                imageTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#44D7B6"))
+                setImageResource(R.drawable.ic_arrow_right)
+                imageTintList = android.content.res.ColorStateList.valueOf(
+                    Color.parseColor(if (enabled) "#44D7B6" else "#6E7C86")
+                )
                 layoutParams = LinearLayout.LayoutParams((74 * density).toInt(), (26 * density).toInt())
             })
         })
-        val rightDate = body.addEndpoint(rightLabel, rightIconResId)
+        val rightDate = body.addEndpoint(rightLabel, rightIcon)
         card.addView(body)
         addView(card)
-        return SyncStatusCardViews(leftDate, rightDate)
+        return if (healthConnectFirst) {
+            SyncStatusCardViews(leftDate, rightDate)
+        } else {
+            SyncStatusCardViews(rightDate, leftDate)
+        }
+    }
+
+    private fun disabledCardBackground(): GradientDrawable {
+        val density = resources.displayMetrics.density
+        return GradientDrawable().apply {
+            cornerRadius = 16 * density
+            setColor(Color.parseColor("#171D22"))
+            setStroke((1 * density).toInt(), Color.parseColor("#39434A"))
+        }
     }
 
     private fun LinearLayout.addEndpoint(label: String, iconResId: Int): TextView {
@@ -847,6 +944,29 @@ class MainActivity : ComponentActivity() {
         return button
     }
 
+    private fun createSettingsTabButton(label: String): Button =
+        Button(this).apply {
+            text = label
+            isAllCaps = false
+            typeface = Typeface.DEFAULT_BOLD
+        }
+
+    private fun updateSettingsTabButtons(container: LinearLayout, selectedIndex: Int) {
+        for (index in 0 until container.childCount) {
+            val button = container.getChildAt(index) as Button
+            val selected = index == selectedIndex
+            button.setTextColor(Color.parseColor(if (selected) "#081018" else "#D9E3EA"))
+            button.background = GradientDrawable().apply {
+                cornerRadius = 10 * resources.displayMetrics.density
+                setColor(Color.parseColor(if (selected) "#44D7B6" else "#22313C"))
+                setStroke(
+                    resources.displayMetrics.density.toInt().coerceAtLeast(1),
+                    Color.parseColor("#38505E")
+                )
+            }
+        }
+    }
+
     private fun createActionButton(label: String, iconResId: Int?, onClick: () -> Unit): Button {
         val density = resources.displayMetrics.density
         val cornerRadius = 10 * density
@@ -911,6 +1031,29 @@ class MainActivity : ComponentActivity() {
         return spinner
     }
 
+    private fun LinearLayout.addSyncDirectionSpinner(): Spinner {
+        val density = resources.displayMetrics.density
+        return Spinner(context).apply {
+            adapter = ArrayAdapter(
+                context,
+                android.R.layout.simple_spinner_dropdown_item,
+                SyncDirection.entries.map { it.label }
+            )
+            background = GradientDrawable().apply {
+                cornerRadius = 8 * density
+                setColor(Color.parseColor("#F2F7FA"))
+            }
+            layoutParams = ViewGroup.MarginLayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = (10 * density).toInt()
+                bottomMargin = (4 * density).toInt()
+            }
+            this@addSyncDirectionSpinner.addView(this)
+        }
+    }
+
     private fun loadSettings() {
         val prefs = getSharedPreferences("notion", Context.MODE_PRIVATE)
         tokenInput.setText(SecureSettingsStore.loadToken(prefs))
@@ -924,6 +1067,12 @@ class MainActivity : ComponentActivity() {
         systolicPropertyInput.setText(prefs.getString("systolicProperty", "収縮期"))
         diastolicPropertyInput.setText(prefs.getString("diastolicProperty", "拡張期"))
         heartRatePropertyInput.setText(prefs.getString("heartRateProperty", "脈拍"))
+        weightDataSourceInput.setText(prefs.getString("weightDataSource", ""))
+        weightMeasuredAtPropertyInput.setText(prefs.getString("weightMeasuredAtProperty", "日付"))
+        weightPropertyInput.setText(prefs.getString("weightProperty", "体重"))
+        stepsDirectionSpinner.setSelection(SyncDirection.indexOf(prefs.getString(STEPS_DIRECTION_KEY, null)))
+        vitalsDirectionSpinner.setSelection(SyncDirection.indexOf(prefs.getString(VITALS_DIRECTION_KEY, null)))
+        weightDirectionSpinner.setSelection(SyncDirection.indexOf(prefs.getString(WEIGHT_DIRECTION_KEY, null)))
         val autoSyncTime = prefs.getString(AUTO_SYNC_TIME_KEY, AUTO_SYNC_OFF) ?: AUTO_SYNC_OFF
         autoSyncSpinner.setSelection(autoSyncChoices().indexOfFirst { it.value == autoSyncTime }.coerceAtLeast(0))
     }
@@ -940,6 +1089,12 @@ class MainActivity : ComponentActivity() {
             .putString("systolicProperty", systolicPropertyInput.text.toString().trim())
             .putString("diastolicProperty", diastolicPropertyInput.text.toString().trim())
             .putString("heartRateProperty", heartRatePropertyInput.text.toString().trim())
+            .putString("weightDataSource", weightDataSourceInput.text.toString().trim())
+            .putString("weightMeasuredAtProperty", weightMeasuredAtPropertyInput.text.toString().trim())
+            .putString("weightProperty", weightPropertyInput.text.toString().trim())
+            .putString(STEPS_DIRECTION_KEY, SyncDirection.entries[stepsDirectionSpinner.selectedItemPosition].value)
+            .putString(VITALS_DIRECTION_KEY, SyncDirection.entries[vitalsDirectionSpinner.selectedItemPosition].value)
+            .putString(WEIGHT_DIRECTION_KEY, SyncDirection.entries[weightDirectionSpinner.selectedItemPosition].value)
             .putString(AUTO_SYNC_TIME_KEY, autoSyncChoices()[autoSyncSpinner.selectedItemPosition].value)
             .apply()
         scheduleAutoSync(this, loadAutoSyncTime())
@@ -956,7 +1111,13 @@ class MainActivity : ComponentActivity() {
             vitalsMeasuredAtProperty = prefs.getString("vitalsMeasuredAtProperty", "日付") ?: "日付",
             systolicProperty = prefs.getString("systolicProperty", "収縮期") ?: "収縮期",
             diastolicProperty = prefs.getString("diastolicProperty", "拡張期") ?: "拡張期",
-            heartRateProperty = prefs.getString("heartRateProperty", "脈拍") ?: "脈拍"
+            heartRateProperty = prefs.getString("heartRateProperty", "脈拍") ?: "脈拍",
+            weightDataSourceId = prefs.getString("weightDataSource", "") ?: "",
+            weightMeasuredAtProperty = prefs.getString("weightMeasuredAtProperty", "日付") ?: "日付",
+            weightProperty = prefs.getString("weightProperty", "体重") ?: "体重",
+            stepsDirection = SyncDirection.from(prefs.getString(STEPS_DIRECTION_KEY, null)),
+            vitalsDirection = SyncDirection.from(prefs.getString(VITALS_DIRECTION_KEY, null)),
+            weightDirection = SyncDirection.from(prefs.getString(WEIGHT_DIRECTION_KEY, null))
         )
     }
 
@@ -1007,11 +1168,14 @@ class MainActivity : ComponentActivity() {
                 stepsNotionDateText.text = "確認中..."
                 vitalsPhoneDateText.text = "確認中..."
                 vitalsNotionDateText.text = "確認中..."
+                weightPhoneDateText.text = "確認中..."
+                weightNotionDateText.text = "確認中..."
 
                 val client = healthConnectClientOrNull()
                 if (client == null) {
                     stepsPhoneDateText.text = "利用不可"
                     vitalsPhoneDateText.text = "利用不可"
+                    weightPhoneDateText.text = "利用不可"
                 } else {
                     val granted = client.permissionController.getGrantedPermissions()
                     if (granted.contains(HealthPermission.getReadPermission(StepsRecord::class))) {
@@ -1027,6 +1191,11 @@ class MainActivity : ComponentActivity() {
                     } else {
                         vitalsPhoneDateText.text = "権限未許可"
                     }
+                    if (granted.contains(HealthPermission.getReadPermission(WeightRecord::class))) {
+                        weightPhoneDateText.text = displayDateTime(readLatestWeightTime(client))
+                    } else {
+                        weightPhoneDateText.text = "権限未許可"
+                    }
                 }
 
                 withContext(Dispatchers.IO) {
@@ -1036,9 +1205,25 @@ class MainActivity : ComponentActivity() {
                     val vitalsDate = runCatching {
                         if (config.hasVitalsSettings()) NotionClient(config).latestVitalsDate(lookbackDays) else null
                     }.getOrNull()
+                    val weightDate = runCatching {
+                        if (config.hasWeightSettings()) NotionClient(config).latestWeightDate(lookbackDays) else null
+                    }.getOrNull()
                     withContext(Dispatchers.Main) {
                         stepsNotionDateText.text = if (config.hasStepsSettings()) displayNotionDateTime(stepsDate) else "設定未完了"
                         vitalsNotionDateText.text = if (config.hasVitalsSettings()) displayNotionDateTime(vitalsDate) else "設定未完了"
+                        weightNotionDateText.text = if (config.hasWeightSettings()) displayNotionDateTime(weightDate) else "設定未完了"
+                        if (config.stepsDirection == SyncDirection.DISABLED) {
+                            stepsPhoneDateText.text = "同期しない"
+                            stepsNotionDateText.text = "同期しない"
+                        }
+                        if (config.vitalsDirection == SyncDirection.DISABLED) {
+                            vitalsPhoneDateText.text = "同期しない"
+                            vitalsNotionDateText.text = "同期しない"
+                        }
+                        if (config.weightDirection == SyncDirection.DISABLED) {
+                            weightPhoneDateText.text = "同期しない"
+                            weightNotionDateText.text = "同期しない"
+                        }
                     }
                 }
             } finally {
@@ -1120,6 +1305,10 @@ class MainActivity : ComponentActivity() {
 
     private fun syncStepsToNotion() {
         val config = currentConfig()
+        if (config.stepsDirection == SyncDirection.DISABLED) {
+            setStatusMessage("歩数は「同期しない」に設定されています。", floating = true)
+            return
+        }
         if (!config.hasStepsSettings()) {
             setStatusMessage("歩数データのNotion設定を入力してください。", floating = true)
             return
@@ -1128,9 +1317,10 @@ class MainActivity : ComponentActivity() {
         startSync(
             syncMessage = "歩数データを同期中...",
             failurePrefix = "歩数データの同期に失敗しました",
-            requiredHealthPermissions = STEPS_SYNC_REQUIRED_PERMISSIONS
+            requiredHealthPermissions = config.stepsDirection.stepsPermissions(),
+            permissionTarget = "歩数"
         ) { client ->
-            val synced = syncUnsyncedSteps(client, config)
+            val synced = HealthNotionSyncEngine.syncSteps(client, config, lookbackDays)
             "歩数データを${synced}件同期しました。"
         }
     }
@@ -1199,6 +1389,10 @@ class MainActivity : ComponentActivity() {
 
     private fun syncVitalsToNotion() {
         val config = currentConfig()
+        if (config.vitalsDirection == SyncDirection.DISABLED) {
+            setStatusMessage("バイタルは「同期しない」に設定されています。", floating = true)
+            return
+        }
         if (!config.hasVitalsSettings()) {
             setStatusMessage("血圧・心拍データのNotion設定を入力してください。", floating = true)
             return
@@ -1207,10 +1401,33 @@ class MainActivity : ComponentActivity() {
         startSync(
             syncMessage = "血圧・心拍データを同期中...",
             failurePrefix = "血圧・心拍データの同期に失敗しました",
-            requiredHealthPermissions = VITALS_SYNC_REQUIRED_PERMISSIONS
+            requiredHealthPermissions = config.vitalsDirection.vitalsPermissions(),
+            permissionTarget = "バイタル"
         ) { client ->
-            val synced = syncUnsyncedVitals(client, config)
+            val synced = HealthNotionSyncEngine.syncVitals(client, config, lookbackDays)
             "血圧・心拍データを${synced}件同期しました。"
+        }
+    }
+
+    private fun syncWeightToNotion() {
+        val config = currentConfig()
+        if (config.weightDirection == SyncDirection.DISABLED) {
+            setStatusMessage("体重は「同期しない」に設定されています。", floating = true)
+            return
+        }
+        if (!config.hasWeightSettings()) {
+            setStatusMessage("体重データのNotion設定を入力してください。", floating = true)
+            return
+        }
+
+        startSync(
+            syncMessage = "体重データを同期中...",
+            failurePrefix = "体重データの同期に失敗しました",
+            requiredHealthPermissions = config.weightDirection.weightPermissions(),
+            permissionTarget = "体重"
+        ) { client ->
+            val synced = HealthNotionSyncEngine.syncWeight(client, config, lookbackDays)
+            "体重データを${synced}件同期しました。"
         }
     }
 
@@ -1573,19 +1790,18 @@ class MainActivity : ComponentActivity() {
 
     private fun syncAllToNotion() {
         val config = currentConfig()
-        if (!config.hasStepsSettings() || !config.hasVitalsSettings()) {
-            setStatusMessage("歩数と血圧・心拍データのNotion設定を入力してください。", floating = true)
+        if (!config.hasAnySettings()) {
+            setStatusMessage("歩数、バイタル、体重のいずれかのNotion設定を入力してください。", floating = true)
             return
         }
 
         startSync(
             syncMessage = "すべてのデータを同期中...",
             failurePrefix = "同期に失敗しました",
-            requiredHealthPermissions = ALL_SYNC_REQUIRED_PERMISSIONS
+            requiredHealthPermissions = config.requiredSyncPermissions()
         ) { client ->
-            val steps = syncUnsyncedSteps(client, config)
-            val vitals = syncUnsyncedVitals(client, config)
-            "歩数${steps}件、血圧・心拍${vitals}件を同期しました。"
+            val result = HealthNotionSyncEngine.syncConfigured(client, config, lookbackDays)
+            result.toDisplayMessage()
         }
     }
 
@@ -1593,6 +1809,7 @@ class MainActivity : ComponentActivity() {
         syncMessage: String,
         failurePrefix: String,
         requiredHealthPermissions: Set<String>,
+        permissionTarget: String? = null,
         sync: suspend (HealthConnectClient) -> String
     ) {
         if (currentSyncJob?.isActive == true) {
@@ -1603,7 +1820,7 @@ class MainActivity : ComponentActivity() {
         showSyncDialog(syncMessage)
         currentSyncJob = CoroutineScope(Dispatchers.Main).launch {
             try {
-                val client = checkedHealthClient(requiredHealthPermissions) ?: return@launch
+                val client = checkedHealthClient(requiredHealthPermissions, permissionTarget) ?: return@launch
                 val resultMessage = withContext(Dispatchers.IO) { sync(client) }
                 setStatusMessage(resultMessage, floating = true)
                 refreshLatestDates()
@@ -2111,7 +2328,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private suspend fun checkedHealthClient(
-        permissions: Set<String> = requiredPermissions
+        permissions: Set<String> = requiredPermissions,
+        permissionTarget: String? = null
     ): HealthConnectClient? {
         val client = healthConnectClientOrNull()
         if (client == null) {
@@ -2122,7 +2340,10 @@ class MainActivity : ComponentActivity() {
         if (!granted.containsAll(permissions)) {
             requestedHealthPermissions = permissions
             permissionLauncher.launch(permissions)
-            setStatusMessage("Health Connectの権限を許可してから再度実行してください。", floating = true)
+            val target = permissionTarget
+                ?: healthPermissionTargets(permissions - granted).joinToString("・").takeIf { it.isNotBlank() }
+            val targetLabel = target?.let { "${it}の" }.orEmpty()
+            setStatusMessage("Health Connectの${targetLabel}権限を許可してから再度実行してください。", floating = true)
             return null
         }
         return client
@@ -2133,10 +2354,6 @@ class MainActivity : ComponentActivity() {
             HealthConnectClient.SDK_AVAILABLE -> HealthConnectClient.getOrCreate(this)
             else -> null
         }
-    }
-
-    private suspend fun syncUnsyncedSteps(client: HealthConnectClient, config: SyncConfig): Int {
-        return HealthNotionSyncEngine.syncSteps(client, config, lookbackDays)
     }
 
     private fun syncOneDebugStepDay(
@@ -2163,10 +2380,6 @@ class MainActivity : ComponentActivity() {
             details = debugMeasurement.details,
             operation = operation
         )
-    }
-
-    private suspend fun syncUnsyncedVitals(client: HealthConnectClient, config: SyncConfig): Int {
-        return HealthNotionSyncEngine.syncVitals(client, config, lookbackDays)
     }
 
     private suspend fun readDailyStepDebugMeasurements(client: HealthConnectClient): List<DailyStepDebugMeasurement> {
@@ -2278,6 +2491,17 @@ class MainActivity : ComponentActivity() {
         ).records.firstOrNull()?.endTime
     }
 
+    private suspend fun readLatestWeightTime(client: HealthConnectClient): Instant? {
+        return client.readRecords(
+            ReadRecordsRequest(
+                recordType = WeightRecord::class,
+                timeRangeFilter = recentRecordTimeRange(),
+                ascendingOrder = false,
+                pageSize = 1
+            )
+        ).records.firstOrNull()?.time
+    }
+
     private fun recordTimeRangeForDate(date: LocalDate): TimeRangeFilter {
         val zone = ZoneId.systemDefault()
         return TimeRangeFilter.between(
@@ -2345,11 +2569,16 @@ private data class UpdateNoticeViews(
 )
 
 private data class SyncStatusCardViews(
-    val leftDateText: TextView,
-    val rightDateText: TextView
+    val healthConnectDateText: TextView,
+    val notionDateText: TextView
 )
 
-private data class SyncConfig(
+private data class SettingsTab(
+    val label: String,
+    val content: LinearLayout
+)
+
+internal data class SyncConfig(
     val token: String,
     val stepsDataSourceId: String,
     val stepsDateProperty: String,
@@ -2358,21 +2587,99 @@ private data class SyncConfig(
     val vitalsMeasuredAtProperty: String,
     val systolicProperty: String,
     val diastolicProperty: String,
-    val heartRateProperty: String
+    val heartRateProperty: String,
+    val weightDataSourceId: String,
+    val weightMeasuredAtProperty: String,
+    val weightProperty: String,
+    val stepsDirection: SyncDirection,
+    val vitalsDirection: SyncDirection,
+    val weightDirection: SyncDirection
 ) {
     fun hasStepsSettings(): Boolean =
+        stepsDirection != SyncDirection.DISABLED &&
         token.isNotBlank() &&
             stepsDataSourceId.isNotBlank() &&
             stepsDateProperty.isNotBlank() &&
             stepsProperty.isNotBlank()
 
     fun hasVitalsSettings(): Boolean =
+        vitalsDirection != SyncDirection.DISABLED &&
         token.isNotBlank() &&
             vitalsDataSourceId.isNotBlank() &&
             vitalsMeasuredAtProperty.isNotBlank() &&
             systolicProperty.isNotBlank() &&
             diastolicProperty.isNotBlank() &&
             heartRateProperty.isNotBlank()
+
+    fun hasWeightSettings(): Boolean =
+        weightDirection != SyncDirection.DISABLED &&
+        token.isNotBlank() &&
+            weightDataSourceId.isNotBlank() &&
+            weightMeasuredAtProperty.isNotBlank() &&
+            weightProperty.isNotBlank()
+
+    fun hasAnySettings(): Boolean = hasStepsSettings() || hasVitalsSettings() || hasWeightSettings()
+
+    fun requiredSyncPermissions(): Set<String> = buildSet {
+        if (hasStepsSettings()) addAll(stepsDirection.stepsPermissions())
+        if (hasVitalsSettings()) addAll(vitalsDirection.vitalsPermissions())
+        if (hasWeightSettings()) addAll(weightDirection.weightPermissions())
+    }
+}
+
+internal enum class SyncDirection(val value: String, val label: String) {
+    DISABLED("disabled", "同期しない"),
+    HEALTH_CONNECT_TO_NOTION("health_connect_to_notion", "HealthConnect→Notion"),
+    NOTION_TO_HEALTH_CONNECT("notion_to_health_connect", "Notion→HealthConnect");
+
+    companion object {
+        fun from(value: String?): SyncDirection =
+            entries.firstOrNull { it.value == value } ?: HEALTH_CONNECT_TO_NOTION
+
+        fun indexOf(value: String?): Int = entries.indexOf(from(value))
+    }
+}
+
+internal data class SyncCardPresentation(
+    val enabled: Boolean,
+    val healthConnectFirst: Boolean,
+    val leftLabel: String,
+    val rightLabel: String
+)
+
+internal fun syncCardPresentation(direction: SyncDirection): SyncCardPresentation =
+    when (direction) {
+        SyncDirection.DISABLED,
+        SyncDirection.HEALTH_CONNECT_TO_NOTION -> SyncCardPresentation(
+            enabled = direction != SyncDirection.DISABLED,
+            healthConnectFirst = true,
+            leftLabel = "Health Connect",
+            rightLabel = "Notion"
+        )
+        SyncDirection.NOTION_TO_HEALTH_CONNECT -> SyncCardPresentation(
+            enabled = true,
+            healthConnectFirst = false,
+            leftLabel = "Notion",
+            rightLabel = "Health Connect"
+        )
+    }
+
+internal fun SyncDirection.stepsPermissions(): Set<String> = when (this) {
+    SyncDirection.DISABLED -> emptySet()
+    SyncDirection.HEALTH_CONNECT_TO_NOTION -> STEPS_SYNC_REQUIRED_PERMISSIONS
+    SyncDirection.NOTION_TO_HEALTH_CONNECT -> STEPS_WRITE_REQUIRED_PERMISSIONS
+}
+
+internal fun SyncDirection.vitalsPermissions(): Set<String> = when (this) {
+    SyncDirection.DISABLED -> emptySet()
+    SyncDirection.HEALTH_CONNECT_TO_NOTION -> VITALS_SYNC_REQUIRED_PERMISSIONS
+    SyncDirection.NOTION_TO_HEALTH_CONNECT -> VITALS_WRITE_REQUIRED_PERMISSIONS
+}
+
+internal fun SyncDirection.weightPermissions(): Set<String> = when (this) {
+    SyncDirection.DISABLED -> emptySet()
+    SyncDirection.HEALTH_CONNECT_TO_NOTION -> WEIGHT_SYNC_REQUIRED_PERMISSIONS
+    SyncDirection.NOTION_TO_HEALTH_CONNECT -> WEIGHT_WRITE_REQUIRED_PERMISSIONS
 }
 
 private data class AutoSyncChoice(
@@ -2384,11 +2691,13 @@ private data class AutoSyncRunStatus(
     val resultLabel: String,
     val lastSuccessAtMillis: Long,
     val lastFailureAtMillis: Long,
-    val failureReason: String
+    val failureReason: String,
+    val resultDetails: String
 ) {
     fun topResultLabel(): String =
         when (resultLabel) {
-            "成功", "未実行" -> resultLabel
+            "成功" -> resultDetails.takeIf { it.isNotBlank() } ?: resultLabel
+            "未実行" -> resultLabel
             else -> "失敗"
         }
 }
@@ -2411,14 +2720,16 @@ private fun loadAutoSyncStatus(context: Context): AutoSyncRunStatus {
         resultLabel = prefs.getString(AUTO_SYNC_RESULT_KEY, "未実行") ?: "未実行",
         lastSuccessAtMillis = prefs.getLong(AUTO_SYNC_LAST_SUCCESS_AT_KEY, 0L),
         lastFailureAtMillis = prefs.getLong(AUTO_SYNC_LAST_FAILURE_AT_KEY, 0L),
-        failureReason = prefs.getString(AUTO_SYNC_FAILURE_REASON_KEY, "") ?: ""
+        failureReason = prefs.getString(AUTO_SYNC_FAILURE_REASON_KEY, "") ?: "",
+        resultDetails = prefs.getString(AUTO_SYNC_RESULT_DETAILS_KEY, "") ?: ""
     )
 }
 
-private fun recordAutoSyncSuccess(context: Context) {
+private fun recordAutoSyncSuccess(context: Context, result: SyncResultCounts) {
     context.getSharedPreferences("notion", Context.MODE_PRIVATE)
         .edit()
         .putString(AUTO_SYNC_RESULT_KEY, "成功")
+        .putString(AUTO_SYNC_RESULT_DETAILS_KEY, result.toDisplayMessage())
         .putLong(AUTO_SYNC_LAST_SUCCESS_AT_KEY, System.currentTimeMillis())
         .apply()
 }
@@ -2427,6 +2738,7 @@ private fun recordAutoSyncFailure(context: Context, resultLabel: String, reason:
     context.getSharedPreferences("notion", Context.MODE_PRIVATE)
         .edit()
         .putString(AUTO_SYNC_RESULT_KEY, resultLabel)
+        .remove(AUTO_SYNC_RESULT_DETAILS_KEY)
         .putLong(AUTO_SYNC_LAST_FAILURE_AT_KEY, System.currentTimeMillis())
         .putString(AUTO_SYNC_FAILURE_REASON_KEY, reason.take(200))
         .apply()
@@ -2475,10 +2787,16 @@ private fun loadSyncConfig(context: Context): SyncConfig {
         stepsDateProperty = prefs.getString("stepsDateProperty", prefs.getString("dateProperty", "日付")) ?: "日付",
         stepsProperty = prefs.getString("stepsProperty", "歩数") ?: "歩数",
         vitalsDataSourceId = prefs.getString("vitalsDataSource", "") ?: "",
-        vitalsMeasuredAtProperty = prefs.getString("vitalsMeasuredAtProperty", "Date") ?: "Date",
+        vitalsMeasuredAtProperty = prefs.getString("vitalsMeasuredAtProperty", "日付") ?: "日付",
         systolicProperty = prefs.getString("systolicProperty", "収縮期") ?: "収縮期",
         diastolicProperty = prefs.getString("diastolicProperty", "拡張期") ?: "拡張期",
-        heartRateProperty = prefs.getString("heartRateProperty", "脈拍") ?: "脈拍"
+        heartRateProperty = prefs.getString("heartRateProperty", "脈拍") ?: "脈拍",
+        weightDataSourceId = prefs.getString("weightDataSource", "") ?: "",
+        weightMeasuredAtProperty = prefs.getString("weightMeasuredAtProperty", "日付") ?: "日付",
+        weightProperty = prefs.getString("weightProperty", "体重") ?: "体重",
+        stepsDirection = SyncDirection.from(prefs.getString(STEPS_DIRECTION_KEY, null)),
+        vitalsDirection = SyncDirection.from(prefs.getString(VITALS_DIRECTION_KEY, null)),
+        weightDirection = SyncDirection.from(prefs.getString(WEIGHT_DIRECTION_KEY, null))
     )
 }
 
@@ -2548,7 +2866,7 @@ class AutoSyncWorker(
         }
 
         val config = loadSyncConfig(applicationContext)
-        if (!config.hasStepsSettings() && !config.hasVitalsSettings()) {
+        if (!config.hasAnySettings()) {
             recordAutoSyncFailure(applicationContext, "失敗", "Notion同期設定が未完了です")
             scheduleNextAutoSync(applicationContext)
             return Result.success()
@@ -2556,23 +2874,20 @@ class AutoSyncWorker(
 
         val requiredPermissions = buildSet {
             add(HealthPermission.PERMISSION_READ_HEALTH_DATA_IN_BACKGROUND)
-            if (config.hasStepsSettings()) {
-                addAll(STEPS_SYNC_REQUIRED_PERMISSIONS)
-            }
-            if (config.hasVitalsSettings()) {
-                addAll(VITALS_SYNC_REQUIRED_PERMISSIONS)
-            }
+            addAll(config.requiredSyncPermissions())
         }
         val granted = client.permissionController.getGrantedPermissions()
         if (!granted.containsAll(requiredPermissions)) {
-            recordAutoSyncFailure(applicationContext, "失敗", "Health Connectの自動同期権限が不足しています")
+            val targets = healthPermissionTargets(requiredPermissions - granted).joinToString("・")
+            val detail = targets.takeIf { it.isNotBlank() }?.let { "${it}の" }.orEmpty()
+            recordAutoSyncFailure(applicationContext, "失敗", "Health Connectの${detail}自動同期権限が不足しています")
             scheduleNextAutoSync(applicationContext)
             return Result.success()
         }
 
         return try {
-            HealthNotionSyncEngine.syncConfigured(client, config, DEFAULT_LOOKBACK_DAYS)
-            recordAutoSyncSuccess(applicationContext)
+            val result = HealthNotionSyncEngine.syncConfigured(client, config, DEFAULT_LOOKBACK_DAYS)
+            recordAutoSyncSuccess(applicationContext, result)
             scheduleNextAutoSync(applicationContext)
             Result.success()
         } catch (_: CancellationException) {
@@ -2591,13 +2906,25 @@ class AutoSyncWorker(
 }
 
 private object HealthNotionSyncEngine {
-    suspend fun syncConfigured(client: HealthConnectClient, config: SyncConfig, lookbackDays: Long): Pair<Int, Int> {
+    suspend fun syncConfigured(
+        client: HealthConnectClient,
+        config: SyncConfig,
+        lookbackDays: Long
+    ): SyncResultCounts {
         val steps = if (config.hasStepsSettings()) syncSteps(client, config, lookbackDays) else 0
         val vitals = if (config.hasVitalsSettings()) syncVitals(client, config, lookbackDays) else 0
-        return steps to vitals
+        val weight = if (config.hasWeightSettings()) syncWeight(client, config, lookbackDays) else 0
+        return SyncResultCounts(
+            steps = steps.takeIf { config.hasStepsSettings() },
+            vitals = vitals.takeIf { config.hasVitalsSettings() },
+            weight = weight.takeIf { config.hasWeightSettings() }
+        )
     }
 
     suspend fun syncSteps(client: HealthConnectClient, config: SyncConfig, lookbackDays: Long): Int {
+        if (config.stepsDirection == SyncDirection.NOTION_TO_HEALTH_CONNECT) {
+            return syncStepsToHealthConnect(client, config, lookbackDays)
+        }
         val notion = NotionClient(config)
         val existingPages = notion.readStepPagesByDate(lookbackDays).toMutableMap()
         var synced = 0
@@ -2618,6 +2945,9 @@ private object HealthNotionSyncEngine {
     }
 
     suspend fun syncVitals(client: HealthConnectClient, config: SyncConfig, lookbackDays: Long): Int {
+        if (config.vitalsDirection == SyncDirection.NOTION_TO_HEALTH_CONNECT) {
+            return syncVitalsToHealthConnect(client, config, lookbackDays)
+        }
         val notion = NotionClient(config)
         val existingTimes = notion.readVitalMeasurementTimes(lookbackDays)
         val measurements = selectUnsyncedVitalMeasurements(
@@ -2631,6 +2961,97 @@ private object HealthNotionSyncEngine {
             synced++
         }
         return synced
+    }
+
+    suspend fun syncWeight(client: HealthConnectClient, config: SyncConfig, lookbackDays: Long): Int {
+        if (config.weightDirection == SyncDirection.NOTION_TO_HEALTH_CONNECT) {
+            return syncWeightToHealthConnect(client, config, lookbackDays)
+        }
+        val notion = NotionClient(config)
+        val existingTimes = notion.readWeightMeasurementTimes(lookbackDays)
+        val measurements = selectUnsyncedWeightMeasurements(
+            readWeightMeasurements(client, lookbackDays),
+            existingTimes
+        )
+        var synced = 0
+        for (measurement in measurements) {
+            coroutineContext.ensureActive()
+            notion.createWeightPage(measurement)
+            synced++
+        }
+        return synced
+    }
+
+    private suspend fun syncStepsToHealthConnect(
+        client: HealthConnectClient,
+        config: SyncConfig,
+        lookbackDays: Long
+    ): Int {
+        val existingTimes = client.readRecords(
+            ReadRecordsRequest(
+                recordType = StepsRecord::class,
+                timeRangeFilter = recentTimeRange(lookbackDays),
+                ascendingOrder = true,
+                pageSize = 5000
+            )
+        ).records.mapTo(mutableSetOf()) { it.endTime }
+        val records = selectUnsyncedStepMeasurements(
+            NotionClient(config).readStepMeasurements(lookbackDays),
+            existingTimes
+        )
+            .map { it.toHealthConnectRecord() }
+        if (records.isNotEmpty()) client.insertRecords(records)
+        return records.size
+    }
+
+    private suspend fun syncVitalsToHealthConnect(
+        client: HealthConnectClient,
+        config: SyncConfig,
+        lookbackDays: Long
+    ): Int {
+        val existingTimes = client.readRecords(
+            ReadRecordsRequest(
+                recordType = BloodPressureRecord::class,
+                timeRangeFilter = recentTimeRange(lookbackDays),
+                ascendingOrder = true,
+                pageSize = 5000
+            )
+        ).records.mapTo(mutableSetOf()) { it.time }
+        val measurements = NotionClient(config).readVitalMeasurements(lookbackDays)
+            .filter { existingTimes.add(it.measuredAt) }
+        for (measurement in measurements) {
+            client.insertRecords(measurement.toHealthConnectRecords(includeHeartRateWhenMissing = false))
+        }
+        return measurements.size
+    }
+
+    private suspend fun syncWeightToHealthConnect(
+        client: HealthConnectClient,
+        config: SyncConfig,
+        lookbackDays: Long
+    ): Int {
+        val existingTimes = client.readRecords(
+            ReadRecordsRequest(
+                recordType = WeightRecord::class,
+                timeRangeFilter = recentTimeRange(lookbackDays),
+                ascendingOrder = true,
+                pageSize = 5000
+            )
+        ).records.mapTo(mutableSetOf()) { it.time }
+        val records = NotionClient(config).readWeightMeasurements(lookbackDays)
+            .filter { existingTimes.add(it.measuredAt) }
+            .map { it.toHealthConnectRecord() }
+        if (records.isNotEmpty()) client.insertRecords(records)
+        return records.size
+    }
+
+    private fun recentTimeRange(lookbackDays: Long): TimeRangeFilter {
+        val zone = ZoneId.systemDefault()
+        val today = LocalDate.now(zone)
+        return TimeRangeFilter.between(
+            today.minusDays(lookbackDays).atStartOfDay(zone).toInstant(),
+            today.plusDays(1).atStartOfDay(zone).toInstant()
+        )
     }
 
     private suspend fun readDailyStepMeasurements(
@@ -2722,9 +3143,44 @@ private object HealthNotionSyncEngine {
             heartRatesByTime = heartRateSamples.associate { it.time to it.beatsPerMinute }
         )
     }
+
+    private suspend fun readWeightMeasurements(
+        client: HealthConnectClient,
+        lookbackDays: Long
+    ): List<WeightMeasurement> {
+        val zone = ZoneId.systemDefault()
+        val today = LocalDate.now(zone)
+        val start = today.minusDays(lookbackDays).atStartOfDay(zone).toInstant()
+        val end = today.plusDays(1).atStartOfDay(zone).toInstant()
+        return client.readRecords(
+            ReadRecordsRequest(
+                recordType = WeightRecord::class,
+                timeRangeFilter = TimeRangeFilter.between(start, end),
+                ascendingOrder = true,
+                pageSize = 5000
+            )
+        ).records.map {
+            WeightMeasurement(
+                measuredAt = it.time,
+                kilograms = it.weight.inKilograms
+            )
+        }
+    }
 }
 
-private data class DailyStepMeasurement(
+internal data class SyncResultCounts(
+    val steps: Int?,
+    val vitals: Int?,
+    val weight: Int?
+) {
+    fun toDisplayMessage(): String = buildList {
+        steps?.let { add("歩数${it}件") }
+        vitals?.let { add("バイタル${it}件") }
+        weight?.let { add("体重${it}件") }
+    }.joinToString("、", postfix = "を同期しました。")
+}
+
+internal data class DailyStepMeasurement(
     val date: LocalDate,
     val recordedAt: Instant,
     val steps: Long
@@ -2760,7 +3216,8 @@ private enum class StepDebugOperation(val label: String) {
 
 private data class NotionStepPage(
     val id: String,
-    val recordedAt: Instant?
+    val recordedAt: Instant?,
+    val steps: Long? = null
 )
 
 private data class NotionDateValue(
@@ -2787,6 +3244,11 @@ internal data class BloodPressureMeasurement(
     val diastolic: Double
 )
 
+internal data class WeightMeasurement(
+    val measuredAt: Instant,
+    val kilograms: Double
+)
+
 internal fun pairVitalMeasurements(
     bloodPressures: List<BloodPressureMeasurement>,
     heartRatesByTime: Map<Instant, Long>
@@ -2808,26 +3270,69 @@ internal fun selectUnsyncedVitalMeasurements(
     return measurements.filter { knownTimes.add(it.measuredAt) }
 }
 
-private fun VitalMeasurement.toHealthConnectRecords(): List<androidx.health.connect.client.records.Record> {
+internal fun selectUnsyncedWeightMeasurements(
+    measurements: List<WeightMeasurement>,
+    existingTimes: Set<Instant>
+): List<WeightMeasurement> {
+    val knownTimes = existingTimes.toMutableSet()
+    return measurements.filter { knownTimes.add(it.measuredAt) }
+}
+
+internal fun selectUnsyncedStepMeasurements(
+    measurements: List<DailyStepMeasurement>,
+    existingTimes: Set<Instant>
+): List<DailyStepMeasurement> {
+    val knownTimes = existingTimes.toMutableSet()
+    return measurements.filter { knownTimes.add(it.recordedAt) }
+}
+
+private fun VitalMeasurement.toHealthConnectRecords(
+    includeHeartRateWhenMissing: Boolean = true
+): List<androidx.health.connect.client.records.Record> {
     val zoneOffset = measuredAt.atZone(ZoneId.systemDefault()).offset
-    return listOf(
+    val records = mutableListOf<androidx.health.connect.client.records.Record>(
         BloodPressureRecord(
             time = measuredAt,
             zoneOffset = zoneOffset,
             metadata = Metadata.manualEntry("manual-bp-${measuredAt.toEpochMilli()}"),
             systolic = Pressure.millimetersOfMercury(systolic),
             diastolic = Pressure.millimetersOfMercury(diastolic)
-        ),
-        HeartRateRecord(
+        )
+    )
+    if (heartRate != null || includeHeartRateWhenMissing) {
+        records.add(HeartRateRecord(
             startTime = measuredAt,
             startZoneOffset = zoneOffset,
             endTime = measuredAt.plusSeconds(1),
             endZoneOffset = zoneOffset,
             samples = listOf(HeartRateRecord.Sample(measuredAt, checkNotNull(heartRate))),
             metadata = Metadata.manualEntry("manual-hr-${measuredAt.toEpochMilli()}")
-        )
+        ))
+    }
+    return records
+}
+
+private fun DailyStepMeasurement.toHealthConnectRecord(): StepsRecord {
+    val zone = ZoneId.systemDefault()
+    val dayStart = date.atStartOfDay(zone).toInstant()
+    val end = if (recordedAt.isAfter(dayStart)) recordedAt else dayStart.plusSeconds(1)
+    return StepsRecord(
+        startTime = dayStart,
+        startZoneOffset = dayStart.atZone(zone).offset,
+        endTime = end,
+        endZoneOffset = end.atZone(zone).offset,
+        count = steps,
+        metadata = Metadata.manualEntry("notion-steps-${recordedAt.toEpochMilli()}")
     )
 }
+
+private fun WeightMeasurement.toHealthConnectRecord(): WeightRecord =
+    WeightRecord(
+        time = measuredAt,
+        zoneOffset = measuredAt.atZone(ZoneId.systemDefault()).offset,
+        weight = Mass.kilograms(kilograms),
+        metadata = Metadata.manualEntry("notion-weight-${measuredAt.toEpochMilli()}")
+    )
 
 private class NotionClient(private val config: SyncConfig) {
     fun latestStepsDate(lookbackDays: Long): NotionDateValue? =
@@ -2836,6 +3341,9 @@ private class NotionClient(private val config: SyncConfig) {
     fun latestVitalsDate(lookbackDays: Long): NotionDateValue? =
         latestDateInSyncWindow(validDataSourceId(config.vitalsDataSourceId), config.vitalsMeasuredAtProperty, lookbackDays)
 
+    fun latestWeightDate(lookbackDays: Long): NotionDateValue? =
+        latestDateInSyncWindow(validDataSourceId(config.weightDataSourceId), config.weightMeasuredAtProperty, lookbackDays)
+
     fun readStepPagesByDate(lookbackDays: Long): Map<LocalDate, NotionStepPage> {
         return readDatePagesByDate(
             dataSourceId = validDataSourceId(config.stepsDataSourceId),
@@ -2843,6 +3351,14 @@ private class NotionClient(private val config: SyncConfig) {
             lookbackDays = lookbackDays
         )
     }
+
+    fun readStepMeasurements(lookbackDays: Long): List<DailyStepMeasurement> =
+        readStepPagesByDate(lookbackDays).mapNotNull { (date, page) ->
+            val recordedAt = page.recordedAt ?: return@mapNotNull null
+            val steps = page.steps ?: return@mapNotNull null
+            if (steps <= 0L) return@mapNotNull null
+            DailyStepMeasurement(date, recordedAt, steps)
+        }.sortedBy { it.recordedAt }
 
     fun createStepPage(steps: DailyStepMeasurement) {
         val body = JSONObject()
@@ -2892,6 +3408,110 @@ private class NotionClient(private val config: SyncConfig) {
     }
 
     fun readVitalMeasurementTimes(lookbackDays: Long): Set<Instant> {
+        return readMeasurementTimes(
+            dataSourceId = config.vitalsDataSourceId,
+            dateProperty = config.vitalsMeasuredAtProperty,
+            lookbackDays = lookbackDays
+        )
+    }
+
+    fun createWeightPage(measurement: WeightMeasurement) {
+        val properties = JSONObject()
+            .put(
+                config.weightMeasuredAtProperty,
+                JSONObject().put("date", JSONObject().put("start", measurement.measuredAt.toNotionDateTime()))
+            )
+            .put(config.weightProperty, JSONObject().put("number", measurement.kilograms))
+        val body = JSONObject()
+            .put("parent", dataSourceParent(validDataSourceId(config.weightDataSourceId)))
+            .put("properties", properties)
+        request("POST", "https://api.notion.com/v1/pages", body)
+    }
+
+    fun readWeightMeasurementTimes(lookbackDays: Long): Set<Instant> {
+        return readMeasurementTimes(
+            dataSourceId = config.weightDataSourceId,
+            dateProperty = config.weightMeasuredAtProperty,
+            lookbackDays = lookbackDays
+        )
+    }
+
+    fun readVitalMeasurements(lookbackDays: Long): List<VitalMeasurement> {
+        return readMeasurementPages(
+            dataSourceId = config.vitalsDataSourceId,
+            dateProperty = config.vitalsMeasuredAtProperty,
+            lookbackDays = lookbackDays
+        ).mapNotNull { properties ->
+            val measuredAt = properties.notionInstant(config.vitalsMeasuredAtProperty) ?: return@mapNotNull null
+            val systolic = properties.notionNumber(config.systolicProperty) ?: return@mapNotNull null
+            val diastolic = properties.notionNumber(config.diastolicProperty) ?: return@mapNotNull null
+            VitalMeasurement(
+                measuredAt = measuredAt,
+                systolic = systolic,
+                diastolic = diastolic,
+                heartRate = properties.notionNumber(config.heartRateProperty)?.toLong()
+            )
+        }
+    }
+
+    fun readWeightMeasurements(lookbackDays: Long): List<WeightMeasurement> {
+        return readMeasurementPages(
+            dataSourceId = config.weightDataSourceId,
+            dateProperty = config.weightMeasuredAtProperty,
+            lookbackDays = lookbackDays
+        ).mapNotNull { properties ->
+            val measuredAt = properties.notionInstant(config.weightMeasuredAtProperty) ?: return@mapNotNull null
+            val kilograms = properties.notionNumber(config.weightProperty) ?: return@mapNotNull null
+            WeightMeasurement(measuredAt, kilograms)
+        }
+    }
+
+    private fun readMeasurementPages(
+        dataSourceId: String,
+        dateProperty: String,
+        lookbackDays: Long
+    ): List<JSONObject> {
+        val zone = ZoneId.systemDefault()
+        val today = LocalDate.now(zone)
+        val start = today.minusDays(lookbackDays).atStartOfDay(zone).toInstant().toNotionDateTime()
+        val end = today.plusDays(1).atStartOfDay(zone).toInstant().toNotionDateTime()
+        val pages = mutableListOf<JSONObject>()
+        var cursor: String? = null
+        do {
+            val body = JSONObject()
+                .put(
+                    "filter",
+                    JSONObject().put(
+                        "and",
+                        JSONArray()
+                            .put(JSONObject().put("property", dateProperty).put("date", JSONObject().put("on_or_after", start)))
+                            .put(JSONObject().put("property", dateProperty).put("date", JSONObject().put("before", end)))
+                    )
+                )
+                .put("page_size", 100)
+            cursor?.let { body.put("start_cursor", it) }
+            val response = request(
+                "POST",
+                "https://api.notion.com/v1/data_sources/${validDataSourceId(dataSourceId)}/query",
+                body
+            )
+            ensureCompleteQuery(response)
+            val results = response.optJSONArray("results") ?: JSONArray()
+            for (index in 0 until results.length()) {
+                results.optJSONObject(index)?.optJSONObject("properties")?.let(pages::add)
+            }
+            cursor = response.optString("next_cursor").takeIf {
+                response.optBoolean("has_more") && it.isNotBlank()
+            }
+        } while (cursor != null)
+        return pages
+    }
+
+    private fun readMeasurementTimes(
+        dataSourceId: String,
+        dateProperty: String,
+        lookbackDays: Long
+    ): Set<Instant> {
         val zone = ZoneId.systemDefault()
         val today = LocalDate.now(zone)
         val windowStart = today.minusDays(lookbackDays).atStartOfDay(zone).toInstant().toNotionDateTime()
@@ -2906,8 +3526,8 @@ private class NotionClient(private val config: SyncConfig) {
                     JSONObject().put(
                         "and",
                         JSONArray()
-                            .put(JSONObject().put("property", config.vitalsMeasuredAtProperty).put("date", JSONObject().put("on_or_after", windowStart)))
-                            .put(JSONObject().put("property", config.vitalsMeasuredAtProperty).put("date", JSONObject().put("before", windowEnd)))
+                            .put(JSONObject().put("property", dateProperty).put("date", JSONObject().put("on_or_after", windowStart)))
+                            .put(JSONObject().put("property", dateProperty).put("date", JSONObject().put("before", windowEnd)))
                     )
                 )
                 .put("page_size", 100)
@@ -2915,7 +3535,7 @@ private class NotionClient(private val config: SyncConfig) {
 
             val response = request(
                 "POST",
-                "https://api.notion.com/v1/data_sources/${validDataSourceId(config.vitalsDataSourceId)}/query",
+                "https://api.notion.com/v1/data_sources/${validDataSourceId(dataSourceId)}/query",
                 body
             )
             ensureCompleteQuery(response)
@@ -2923,7 +3543,7 @@ private class NotionClient(private val config: SyncConfig) {
             for (i in 0 until results.length()) {
                 results.optJSONObject(i)
                     ?.optJSONObject("properties")
-                    ?.optJSONObject(config.vitalsMeasuredAtProperty)
+                    ?.optJSONObject(dateProperty)
                     ?.optJSONObject("date")
                     ?.optString("start")
                     ?.takeIf { it.isNotBlank() }
@@ -3013,9 +3633,13 @@ private class NotionClient(private val config: SyncConfig) {
                     ?.toNotionDateValue()
                     ?: continue
                 val pageId = page.optString("id").takeIf { it.isNotBlank() } ?: continue
+                val steps = page
+                    .optJSONObject("properties")
+                    ?.notionNumber(config.stepsProperty)
+                    ?.toLong()
                 val existing = pages[value.date]
                 if (existing == null || notionTimestampSortValue(existing.recordedAt) < notionTimestampSortValue(value.timestamp)) {
-                    pages[value.date] = NotionStepPage(id = pageId, recordedAt = value.timestamp)
+                    pages[value.date] = NotionStepPage(id = pageId, recordedAt = value.timestamp, steps = steps)
                 }
             }
             cursor = response.optString("next_cursor").takeIf {
@@ -3127,6 +3751,13 @@ private fun JSONObject.notionNumber(property: String): Double? =
         ?.takeIf { !it.isNull("number") }
         ?.optDouble("number")
 
+private fun JSONObject.notionInstant(property: String): Instant? =
+    optJSONObject(property)
+        ?.optJSONObject("date")
+        ?.optString("start")
+        ?.takeIf { it.isNotBlank() }
+        ?.let { runCatching { Instant.parse(it) }.getOrNull() }
+
 private fun Instant.toNotionDateTime(): String =
     DateTimeFormatter.ISO_OFFSET_DATE_TIME.format(atZone(ZoneId.systemDefault()))
 
@@ -3150,6 +3781,10 @@ private const val AUTO_SYNC_RESULT_KEY = "autoSyncResult"
 private const val AUTO_SYNC_LAST_SUCCESS_AT_KEY = "autoSyncLastSuccessAt"
 private const val AUTO_SYNC_LAST_FAILURE_AT_KEY = "autoSyncLastFailureAt"
 private const val AUTO_SYNC_FAILURE_REASON_KEY = "autoSyncFailureReason"
+private const val AUTO_SYNC_RESULT_DETAILS_KEY = "autoSyncResultDetails"
+private const val STEPS_DIRECTION_KEY = "stepsSyncDirection"
+private const val VITALS_DIRECTION_KEY = "vitalsSyncDirection"
+private const val WEIGHT_DIRECTION_KEY = "weightSyncDirection"
 private const val DEFAULT_LOOKBACK_DAYS = 30L
 private const val NOTION_API_VERSION = "2026-03-11"
 private const val NOTION_MAX_REQUEST_ATTEMPTS = 3
@@ -3162,16 +3797,42 @@ private const val MAX_MANUAL_VITAL_DIGITS_PER_COMPACT_VALUE = 3
 private val STEPS_SYNC_REQUIRED_PERMISSIONS = setOf(
     HealthPermission.getReadPermission(StepsRecord::class)
 )
+private val STEPS_WRITE_REQUIRED_PERMISSIONS = setOf(
+    HealthPermission.getWritePermission(StepsRecord::class),
+    HealthPermission.getReadPermission(StepsRecord::class)
+)
 private val VITALS_SYNC_REQUIRED_PERMISSIONS = setOf(
     HealthPermission.getReadPermission(BloodPressureRecord::class),
     HealthPermission.getReadPermission(HeartRateRecord::class)
 )
-private val ALL_SYNC_REQUIRED_PERMISSIONS =
-    STEPS_SYNC_REQUIRED_PERMISSIONS + VITALS_SYNC_REQUIRED_PERMISSIONS
+private val WEIGHT_SYNC_REQUIRED_PERMISSIONS = setOf(
+    HealthPermission.getReadPermission(WeightRecord::class)
+)
+private val VITALS_WRITE_REQUIRED_PERMISSIONS = setOf(
+    HealthPermission.getWritePermission(BloodPressureRecord::class),
+    HealthPermission.getReadPermission(BloodPressureRecord::class),
+    HealthPermission.getWritePermission(HeartRateRecord::class)
+)
+private val WEIGHT_WRITE_REQUIRED_PERMISSIONS = setOf(
+    HealthPermission.getWritePermission(WeightRecord::class),
+    HealthPermission.getReadPermission(WeightRecord::class)
+)
 private val MANUAL_VITAL_REQUIRED_PERMISSIONS = setOf(
     HealthPermission.getWritePermission(BloodPressureRecord::class),
     HealthPermission.getWritePermission(HeartRateRecord::class)
 )
+
+private fun healthPermissionTargets(permissions: Set<String>): List<String> = buildList {
+    if (permissions.any { it in STEPS_SYNC_REQUIRED_PERMISSIONS || it in STEPS_WRITE_REQUIRED_PERMISSIONS }) add("歩数")
+    if (permissions.any {
+            it in VITALS_SYNC_REQUIRED_PERMISSIONS ||
+                it in VITALS_WRITE_REQUIRED_PERMISSIONS ||
+                it in MANUAL_VITAL_REQUIRED_PERMISSIONS
+        }
+    ) add("バイタル")
+    if (permissions.any { it in WEIGHT_SYNC_REQUIRED_PERMISSIONS || it in WEIGHT_WRITE_REQUIRED_PERMISSIONS }) add("体重")
+    if (HealthPermission.PERMISSION_READ_HEALTH_DATA_IN_BACKGROUND in permissions) add("バックグラウンド")
+}.distinct()
 
 private val Int.label: String
     get() = when (this) {
