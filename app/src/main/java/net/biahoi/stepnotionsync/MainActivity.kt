@@ -2919,7 +2919,7 @@ private data class AutoSyncRunStatus(
 ) {
     fun topResultLabel(): String =
         when (resultLabel) {
-            "成功" -> resultDetails.takeIf { it.isNotBlank() } ?: resultLabel
+            "成功" -> "成功"
             "未実行" -> resultLabel
             else -> "失敗"
         }
