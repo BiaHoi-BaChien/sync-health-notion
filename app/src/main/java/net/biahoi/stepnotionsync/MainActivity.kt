@@ -348,11 +348,32 @@ class MainActivity : ComponentActivity() {
             setPadding(0, (4 * density).toInt(), 0, (8 * density).toInt())
         })
 
-        root.addSectionTitle("共通設定")
+        root.addSectionTitle(
+            title = "共通設定",
+            helpText = """
+                Notionとの接続に使うAPIトークンを設定します。
+
+                画面下部の「歩数」「バイタル」「体重」タブでは、同期方向、NotionのData Source ID、各プロパティ名を設定できます。Notion側で連携対象のデータソースをインテグレーションに共有してから入力してください。
+            """.trimIndent()
+        )
         tokenInput = root.addInput("Notion API Token", password = true)
-        root.addSectionTitle("自動同期")
+        root.addSectionTitle(
+            title = "自動同期",
+            helpText = """
+                毎日同期を実行する時刻を選択します。「自動同期しない」を選ぶと停止します。
+
+                保存後、指定時刻を目安にバックグラウンドで同期します。端末の省電力設定や通信状況により、開始時刻が前後する場合があります。利用するデータのHealth Connect権限も必要です。
+            """.trimIndent()
+        )
         autoSyncSpinner = root.addAutoSyncSpinner()
-        root.addSectionTitle("Health Connect")
+        root.addSectionTitle(
+            title = "Health Connect",
+            helpText = """
+                歩数、血圧・心拍、体重を読み書きするための権限を許可します。
+
+                設定した同期方向に応じて必要な権限が変わります。自動同期を使う場合は、Health Connectのバックグラウンド読み取り権限も許可してください。
+            """.trimIndent()
+        )
         root.addButton("Health Connect権限を許可") { requestHealthPermission() }
 
         val tabButtons = LinearLayout(this).apply {
@@ -898,14 +919,131 @@ class MainActivity : ComponentActivity() {
         return button
     }
 
-    private fun LinearLayout.addSectionTitle(title: String) {
-        addView(TextView(context).apply {
+    private fun LinearLayout.addSectionTitle(title: String, helpText: String) {
+        val density = resources.displayMetrics.density
+        val row = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, (24 * density).toInt(), 0, 0)
+        }
+        row.addView(TextView(context).apply {
             text = title
             textSize = 18f
             setTextColor(Color.WHITE)
             typeface = Typeface.DEFAULT_BOLD
-            setPadding(0, 24, 0, 0)
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
         })
+        row.addView(ImageButton(context).apply {
+            contentDescription = "${title}のヘルプ"
+            tooltipText = "${title}の説明"
+            setImageResource(R.drawable.ic_help_outline)
+            imageTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#A9DDF5"))
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.parseColor("#172633"))
+                setStroke((1 * density).toInt(), Color.parseColor("#456577"))
+            }
+            scaleType = android.widget.ImageView.ScaleType.CENTER_INSIDE
+            setPadding(
+                (6 * density).toInt(),
+                (6 * density).toInt(),
+                (6 * density).toInt(),
+                (6 * density).toInt()
+            )
+            layoutParams = LinearLayout.LayoutParams(
+                (32 * density).toInt(),
+                (32 * density).toInt()
+            ).apply {
+                leftMargin = (8 * density).toInt()
+            }
+            setOnClickListener { showSettingsHelpDialog(title, helpText) }
+        })
+        addView(row)
+    }
+
+    private fun showSettingsHelpDialog(title: String, helpText: String) {
+        val density = resources.displayMetrics.density
+        lateinit var dialog: Dialog
+
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            isClickable = true
+            setPadding(
+                (22 * density).toInt(),
+                (20 * density).toInt(),
+                (22 * density).toInt(),
+                (18 * density).toInt()
+            )
+            background = GradientDrawable().apply {
+                cornerRadius = 18 * density
+                setColor(Color.parseColor("#172633"))
+                setStroke((1 * density).toInt(), Color.parseColor("#456577"))
+            }
+        }
+        panel.addView(TextView(this).apply {
+            text = title
+            textSize = 21f
+            setTextColor(Color.WHITE)
+            typeface = Typeface.DEFAULT_BOLD
+        })
+        panel.addView(TextView(this).apply {
+            text = helpText
+            textSize = 16f
+            setTextColor(Color.parseColor("#D9E3EA"))
+            setLineSpacing(0f, 1.18f)
+            setPadding(0, (12 * density).toInt(), 0, 0)
+        })
+        panel.addView(Button(this).apply {
+            text = "閉じる"
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor("#081018"))
+            background = GradientDrawable().apply {
+                cornerRadius = 10 * density
+                setColor(Color.parseColor("#A9DDF5"))
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = (18 * density).toInt()
+            }
+            setOnClickListener { dialog.dismiss() }
+        })
+
+        val overlay = FrameLayout(this).apply {
+            setPadding(
+                (24 * density).toInt(),
+                (24 * density).toInt(),
+                (24 * density).toInt(),
+                (24 * density).toInt()
+            )
+            setOnClickListener { dialog.dismiss() }
+            addView(
+                panel,
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.CENTER
+                )
+            )
+        }
+
+        dialog = Dialog(this).apply {
+            requestWindowFeature(Window.FEATURE_NO_TITLE)
+            setCancelable(true)
+            setCanceledOnTouchOutside(true)
+            setContentView(overlay)
+            window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            window?.setDimAmount(0.58f)
+            show()
+            window?.setLayout(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        }
     }
 
     private fun LinearLayout.addInput(hintText: String, password: Boolean = false): EditText {
