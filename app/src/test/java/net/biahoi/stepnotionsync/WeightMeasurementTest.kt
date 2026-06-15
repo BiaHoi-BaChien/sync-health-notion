@@ -2,6 +2,7 @@ package net.biahoi.stepnotionsync
 
 import java.time.Instant
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class WeightMeasurementTest {
@@ -34,5 +35,24 @@ class WeightMeasurementTest {
         val result = SyncResultCounts(steps = 0, vitals = 2, weight = 0)
 
         assertEquals("歩数0件、バイタル2件、体重0件を同期しました。", result.toDisplayMessage())
+    }
+
+    @Test
+    fun acceptsManualWeightWithOneDecimalPlace() {
+        assertEquals(61.2, parseManualWeight("61.2"), 0.0)
+        assertEquals(61.0, parseManualWeight("61"), 0.0)
+    }
+
+    @Test
+    fun rejectsManualWeightWithMoreThanOneDecimalPlace() {
+        assertThrows(IllegalArgumentException::class.java) {
+            parseManualWeight("61.25")
+        }
+    }
+
+    @Test
+    fun formatsVoiceWeightToOneDecimalPlace() {
+        assertEquals("61.3", formatManualWeight(61.25))
+        assertEquals("61.0", formatManualWeight(61.0))
     }
 }

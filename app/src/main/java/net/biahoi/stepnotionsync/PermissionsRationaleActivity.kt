@@ -14,7 +14,7 @@ class PermissionsRationaleActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setPadding(padding, padding, padding, padding)
             addView(TextView(context).apply {
-                text = "手入力した血圧と脈拍はHealth Connectへ保存します。同期設定に応じて、歩数、血圧、脈拍、体重データをHealth ConnectとNotionの間で読み書きします。"
+                text = "手入力した血圧、脈拍、体重はHealth Connectへ保存します。同期設定に応じて、歩数、血圧、脈拍、体重データをHealth ConnectとNotionの間で読み書きします。"
                 textSize = 18f
             })
         }
