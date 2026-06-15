@@ -140,6 +140,8 @@ class MainActivity : ComponentActivity() {
     private var latestDateRefreshDialog: Dialog? = null
     private var autoSyncDetailsExpanded = false
     private var manualVitalVoiceInputs: ManualVitalVoiceInputs? = null
+    private var manualWeightVoiceInput: EditText? = null
+    private var manualVoiceTarget: ManualVoiceTarget? = null
     private val lookbackDays = DEFAULT_LOOKBACK_DAYS
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -159,7 +161,7 @@ class MainActivity : ComponentActivity() {
             ActivityResultContracts.RequestPermission()
         ) { granted ->
             if (granted) {
-                launchManualVitalVoiceInput()
+                launchManualVoiceInput()
             } else {
                 setStatusMessage("マイク権限を許可してください。", floating = true)
             }
@@ -173,7 +175,7 @@ class MainActivity : ComponentActivity() {
             val matches = result.data
                 ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
                 .orEmpty()
-            applyManualVitalVoiceResult(matches)
+            applyManualVoiceResult(matches)
         }
         migrateAutoSyncScheduleIfNeeded()
         showTopPage()
@@ -258,7 +260,10 @@ class MainActivity : ComponentActivity() {
             direction = config.weightDirection,
             actionLabel = "すぐに同期",
             actionDescription = "体重をすぐに同期",
-            action = { syncWeightToNotion() }
+            action = { syncWeightToNotion() },
+            secondaryActionDescription = "体重をHealth Connectに登録",
+            secondaryActionIconResId = R.drawable.ic_add,
+            secondaryAction = { showManualWeightEntryDialog() }
         ).also { views ->
             weightPhoneDateText = views.healthConnectDateText
             weightNotionDateText = views.notionDateText
@@ -343,11 +348,32 @@ class MainActivity : ComponentActivity() {
             setPadding(0, (4 * density).toInt(), 0, (8 * density).toInt())
         })
 
-        root.addSectionTitle("共通設定")
+        root.addSectionTitle(
+            title = "共通設定",
+            helpText = """
+                Notionとの接続に使うAPIトークンを設定します。
+
+                画面下部の「歩数」「バイタル」「体重」タブでは、同期方向、NotionのData Source ID、各プロパティ名を設定できます。Notion側で連携対象のデータソースをインテグレーションに共有してから入力してください。
+            """.trimIndent()
+        )
         tokenInput = root.addInput("Notion API Token", password = true)
-        root.addSectionTitle("自動同期")
+        root.addSectionTitle(
+            title = "自動同期",
+            helpText = """
+                毎日同期を実行する時刻を選択します。「自動同期しない」を選ぶと停止します。
+
+                保存後、指定時刻を目安にバックグラウンドで同期します。端末の省電力設定や通信状況により、開始時刻が前後する場合があります。利用するデータのHealth Connect権限も必要です。
+            """.trimIndent()
+        )
         autoSyncSpinner = root.addAutoSyncSpinner()
-        root.addSectionTitle("Health Connect")
+        root.addSectionTitle(
+            title = "Health Connect",
+            helpText = """
+                歩数、血圧・心拍、体重を読み書きするための権限を許可します。
+
+                設定した同期方向に応じて必要な権限が変わります。自動同期を使う場合は、Health Connectのバックグラウンド読み取り権限も許可してください。
+            """.trimIndent()
+        )
         root.addButton("Health Connect権限を許可") { requestHealthPermission() }
 
         val tabButtons = LinearLayout(this).apply {
@@ -893,14 +919,131 @@ class MainActivity : ComponentActivity() {
         return button
     }
 
-    private fun LinearLayout.addSectionTitle(title: String) {
-        addView(TextView(context).apply {
+    private fun LinearLayout.addSectionTitle(title: String, helpText: String) {
+        val density = resources.displayMetrics.density
+        val row = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, (24 * density).toInt(), 0, 0)
+        }
+        row.addView(TextView(context).apply {
             text = title
             textSize = 18f
             setTextColor(Color.WHITE)
             typeface = Typeface.DEFAULT_BOLD
-            setPadding(0, 24, 0, 0)
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
         })
+        row.addView(ImageButton(context).apply {
+            contentDescription = "${title}のヘルプ"
+            tooltipText = "${title}の説明"
+            setImageResource(R.drawable.ic_help_outline)
+            imageTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#A9DDF5"))
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.parseColor("#172633"))
+                setStroke((1 * density).toInt(), Color.parseColor("#456577"))
+            }
+            scaleType = android.widget.ImageView.ScaleType.CENTER_INSIDE
+            setPadding(
+                (6 * density).toInt(),
+                (6 * density).toInt(),
+                (6 * density).toInt(),
+                (6 * density).toInt()
+            )
+            layoutParams = LinearLayout.LayoutParams(
+                (32 * density).toInt(),
+                (32 * density).toInt()
+            ).apply {
+                leftMargin = (8 * density).toInt()
+            }
+            setOnClickListener { showSettingsHelpDialog(title, helpText) }
+        })
+        addView(row)
+    }
+
+    private fun showSettingsHelpDialog(title: String, helpText: String) {
+        val density = resources.displayMetrics.density
+        lateinit var dialog: Dialog
+
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            isClickable = true
+            setPadding(
+                (22 * density).toInt(),
+                (20 * density).toInt(),
+                (22 * density).toInt(),
+                (18 * density).toInt()
+            )
+            background = GradientDrawable().apply {
+                cornerRadius = 18 * density
+                setColor(Color.parseColor("#172633"))
+                setStroke((1 * density).toInt(), Color.parseColor("#456577"))
+            }
+        }
+        panel.addView(TextView(this).apply {
+            text = title
+            textSize = 21f
+            setTextColor(Color.WHITE)
+            typeface = Typeface.DEFAULT_BOLD
+        })
+        panel.addView(TextView(this).apply {
+            text = helpText
+            textSize = 16f
+            setTextColor(Color.parseColor("#D9E3EA"))
+            setLineSpacing(0f, 1.18f)
+            setPadding(0, (12 * density).toInt(), 0, 0)
+        })
+        panel.addView(Button(this).apply {
+            text = "閉じる"
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor("#081018"))
+            background = GradientDrawable().apply {
+                cornerRadius = 10 * density
+                setColor(Color.parseColor("#A9DDF5"))
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = (18 * density).toInt()
+            }
+            setOnClickListener { dialog.dismiss() }
+        })
+
+        val overlay = FrameLayout(this).apply {
+            setPadding(
+                (24 * density).toInt(),
+                (24 * density).toInt(),
+                (24 * density).toInt(),
+                (24 * density).toInt()
+            )
+            setOnClickListener { dialog.dismiss() }
+            addView(
+                panel,
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.CENTER
+                )
+            )
+        }
+
+        dialog = Dialog(this).apply {
+            requestWindowFeature(Window.FEATURE_NO_TITLE)
+            setCancelable(true)
+            setCanceledOnTouchOutside(true)
+            setContentView(overlay)
+            window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            window?.setDimAmount(0.58f)
+            show()
+            window?.setLayout(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        }
     }
 
     private fun LinearLayout.addInput(hintText: String, password: Boolean = false): EditText {
@@ -1431,6 +1574,153 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun showManualWeightEntryDialog() {
+        if (currentSyncJob?.isActive == true) {
+            setStatusMessage("同期中は体重を登録できません。", floating = true)
+            return
+        }
+
+        val density = resources.displayMetrics.density
+        lateinit var dialog: Dialog
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(
+                (20 * density).toInt(),
+                (20 * density).toInt(),
+                (20 * density).toInt(),
+                (18 * density).toInt()
+            )
+            background = GradientDrawable().apply {
+                cornerRadius = 14 * density
+                setColor(Color.parseColor("#17232D"))
+                setStroke((1 * density).toInt(), Color.parseColor("#44D7B6"))
+            }
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER
+            ).apply {
+                leftMargin = (24 * density).toInt()
+                rightMargin = (24 * density).toInt()
+            }
+        }
+        val titleRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        }
+        titleRow.addView(TextView(this).apply {
+            text = "体重をHealth Connectに登録"
+            textSize = 20f
+            setTextColor(Color.WHITE)
+            typeface = Typeface.DEFAULT_BOLD
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        val micButton = ImageButton(this).apply {
+            contentDescription = "音声で体重を入力"
+            setImageResource(R.drawable.ic_mic)
+            setColorFilter(Color.parseColor("#081018"))
+            background = GradientDrawable().apply {
+                cornerRadius = 10 * density
+                setColor(Color.parseColor("#44D7B6"))
+            }
+            layoutParams = LinearLayout.LayoutParams((44 * density).toInt(), (44 * density).toInt()).apply {
+                leftMargin = (12 * density).toInt()
+            }
+        }
+        titleRow.addView(micButton)
+        panel.addView(titleRow)
+        panel.addView(TextView(this).apply {
+            text = "測定日時は登録時点の時刻で保存します。体重はkg単位で小数第1位まで入力できます。"
+            textSize = 13f
+            setTextColor(Color.parseColor("#AAB7C4"))
+            setPadding(0, (6 * density).toInt(), 0, (4 * density).toInt())
+        })
+
+        val weightInput = panel.addNumberInput("体重 (kg)")
+        micButton.setOnClickListener {
+            startManualWeightVoiceInput(weightInput)
+        }
+
+        val buttons = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = (16 * density).toInt()
+            }
+        }
+        buttons.addView(Button(this).apply {
+            text = "キャンセル"
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor("#DDE7EF"))
+            background = GradientDrawable().apply {
+                cornerRadius = 10 * density
+                setColor(Color.parseColor("#22313B"))
+                setStroke((1 * density).toInt(), Color.parseColor("#44D7B6"))
+            }
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                rightMargin = (8 * density).toInt()
+            }
+            setOnClickListener { dialog.dismiss() }
+        })
+        buttons.addView(Button(this).apply {
+            text = "Health Connectに登録"
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor("#081018"))
+            background = GradientDrawable().apply {
+                cornerRadius = 10 * density
+                setColor(Color.parseColor("#44D7B6"))
+            }
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                leftMargin = (8 * density).toInt()
+            }
+            setOnClickListener {
+                val measurement = runCatching {
+                    WeightMeasurement(
+                        measuredAt = Instant.now(),
+                        kilograms = parseManualWeight(weightInput.text.toString())
+                    )
+                }.getOrElse { error ->
+                    setStatusMessage(error.message ?: "入力値を確認してください。", floating = true)
+                    return@setOnClickListener
+                }
+                dialog.dismiss()
+                registerManualWeightToHealthConnect(measurement)
+            }
+        })
+        panel.addView(buttons)
+
+        dialog = Dialog(this).apply {
+            requestWindowFeature(Window.FEATURE_NO_TITLE)
+            setCancelable(true)
+            setCanceledOnTouchOutside(true)
+            setContentView(FrameLayout(this@MainActivity).apply {
+                addView(panel)
+            })
+            window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            window?.setDimAmount(0.64f)
+            setOnDismissListener {
+                if (manualWeightVoiceInput === weightInput) {
+                    manualWeightVoiceInput = null
+                    if (manualVoiceTarget == ManualVoiceTarget.WEIGHT) {
+                        manualVoiceTarget = null
+                    }
+                }
+            }
+            show()
+            window?.setLayout(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        }
+    }
+
     private fun showManualVitalEntryDialog() {
         if (currentSyncJob?.isActive == true) {
             setStatusMessage("同期中はバイタルを登録できません。", floating = true)
@@ -1575,6 +1865,9 @@ class MainActivity : ComponentActivity() {
             setOnDismissListener {
                 if (manualVitalVoiceInputs?.systolic === systolicInput) {
                     manualVitalVoiceInputs = null
+                    if (manualVoiceTarget == ManualVoiceTarget.VITALS) {
+                        manualVoiceTarget = null
+                    }
                 }
             }
             show()
@@ -1587,24 +1880,50 @@ class MainActivity : ComponentActivity() {
 
     private fun startManualVitalVoiceInput(inputs: ManualVitalVoiceInputs) {
         manualVitalVoiceInputs = inputs
+        manualVoiceTarget = ManualVoiceTarget.VITALS
+        startManualVoiceInput()
+    }
+
+    private fun startManualWeightVoiceInput(input: EditText) {
+        manualWeightVoiceInput = input
+        manualVoiceTarget = ManualVoiceTarget.WEIGHT
+        startManualVoiceInput()
+    }
+
+    private fun startManualVoiceInput() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-            launchManualVitalVoiceInput()
+            launchManualVoiceInput()
         } else {
             voicePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
         }
     }
 
-    private fun launchManualVitalVoiceInput() {
+    private fun launchManualVoiceInput() {
+        val target = manualVoiceTarget ?: return
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.JAPAN.toLanguageTag())
-            putExtra(RecognizerIntent.EXTRA_PROMPT, "最高血圧、最低血圧、脈拍の順に数字を話してください。")
+            putExtra(
+                RecognizerIntent.EXTRA_PROMPT,
+                when (target) {
+                    ManualVoiceTarget.VITALS -> "最高血圧、最低血圧、脈拍の順に数字を話してください。"
+                    ManualVoiceTarget.WEIGHT -> "体重をキログラムで話してください。"
+                }
+            )
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
         }
         try {
             voiceInputLauncher.launch(intent)
         } catch (_: ActivityNotFoundException) {
             setStatusMessage("この端末では音声入力を起動できません。", floating = true)
+        }
+    }
+
+    private fun applyManualVoiceResult(matches: List<String>) {
+        when (manualVoiceTarget) {
+            ManualVoiceTarget.VITALS -> applyManualVitalVoiceResult(matches)
+            ManualVoiceTarget.WEIGHT -> applyManualWeightVoiceResult(matches)
+            null -> Unit
         }
     }
 
@@ -1619,6 +1938,21 @@ class MainActivity : ComponentActivity() {
         inputs.systolic.setText(formatManualVitalNumber(values[0]))
         inputs.diastolic.setText(formatManualVitalNumber(values[1]))
         inputs.heartRate.setText(values[2].toLong().toString())
+        setStatusMessage("音声入力を反映しました。", floating = true)
+    }
+
+    private fun applyManualWeightVoiceResult(matches: List<String>) {
+        val input = manualWeightVoiceInput ?: return
+        val value = matches
+            .asSequence()
+            .flatMap { extractSpokenNumbers(it).asSequence() }
+            .firstOrNull()
+        if (value == null) {
+            setStatusMessage("体重を数字で話してください。", floating = true)
+            return
+        }
+
+        input.setText(formatManualWeight(value))
         setStatusMessage("音声入力を反映しました。", floating = true)
     }
 
@@ -1781,6 +2115,33 @@ class MainActivity : ComponentActivity() {
                 refreshLatestDates()
             } catch (e: Exception) {
                 setStatusMessage("バイタルの登録に失敗しました: ${safeErrorMessage(e)}", floating = true)
+            } finally {
+                currentSyncJob = null
+                dismissSyncDialog()
+            }
+        }
+    }
+
+    private fun registerManualWeightToHealthConnect(measurement: WeightMeasurement) {
+        if (currentSyncJob?.isActive == true) {
+            return
+        }
+
+        val message = "体重をHealth Connectに登録中..."
+        setStatusMessage(message)
+        showSyncDialog(message)
+        currentSyncJob = CoroutineScope(Dispatchers.Main).launch {
+            try {
+                val client = checkedHealthClient(MANUAL_WEIGHT_REQUIRED_PERMISSIONS) ?: return@launch
+                withContext(Dispatchers.IO) {
+                    client.insertRecords(
+                        listOf(measurement.toHealthConnectRecord(metadataIdPrefix = "manual-weight"))
+                    )
+                }
+                setStatusMessage("体重をHealth Connectに登録しました。", floating = true)
+                refreshLatestDates()
+            } catch (e: Exception) {
+                setStatusMessage("体重の登録に失敗しました: ${safeErrorMessage(e)}", floating = true)
             } finally {
                 currentSyncJob = null
                 dismissSyncDialog()
@@ -2696,7 +3057,7 @@ private data class AutoSyncRunStatus(
 ) {
     fun topResultLabel(): String =
         when (resultLabel) {
-            "成功" -> resultDetails.takeIf { it.isNotBlank() } ?: resultLabel
+            "成功" -> "成功"
             "未実行" -> resultLabel
             else -> "失敗"
         }
@@ -3231,6 +3592,11 @@ private data class ManualVitalVoiceInputs(
     val heartRate: EditText
 )
 
+private enum class ManualVoiceTarget {
+    VITALS,
+    WEIGHT
+}
+
 internal data class VitalMeasurement(
     val measuredAt: Instant,
     val systolic: Double,
@@ -3277,6 +3643,19 @@ internal fun selectUnsyncedWeightMeasurements(
     val knownTimes = existingTimes.toMutableSet()
     return measurements.filter { knownTimes.add(it.measuredAt) }
 }
+
+internal fun parseManualWeight(text: String): Double {
+    val normalized = text.trim()
+    require(MANUAL_WEIGHT_PATTERN.matches(normalized)) {
+        "体重は小数第1位までの数値で入力してください。"
+    }
+    val value = normalized.toDouble()
+    require(value > 0.0) { "体重は0より大きい値で入力してください。" }
+    return value
+}
+
+internal fun formatManualWeight(value: Double): String =
+    String.format(Locale.JAPAN, "%.1f", value)
 
 internal fun selectUnsyncedStepMeasurements(
     measurements: List<DailyStepMeasurement>,
@@ -3326,12 +3705,14 @@ private fun DailyStepMeasurement.toHealthConnectRecord(): StepsRecord {
     )
 }
 
-private fun WeightMeasurement.toHealthConnectRecord(): WeightRecord =
+private fun WeightMeasurement.toHealthConnectRecord(
+    metadataIdPrefix: String = "notion-weight"
+): WeightRecord =
     WeightRecord(
         time = measuredAt,
         zoneOffset = measuredAt.atZone(ZoneId.systemDefault()).offset,
         weight = Mass.kilograms(kilograms),
-        metadata = Metadata.manualEntry("notion-weight-${measuredAt.toEpochMilli()}")
+        metadata = Metadata.manualEntry("$metadataIdPrefix-${measuredAt.toEpochMilli()}")
     )
 
 private class NotionClient(private val config: SyncConfig) {
@@ -3794,6 +4175,7 @@ private val NOTION_RETRYABLE_STATUS_CODES = setOf(409, 429, 500, 502, 503, 504, 
 private const val MANUAL_VITAL_FIELD_COUNT = 3
 private const val MIN_MANUAL_VITAL_DIGITS_PER_COMPACT_VALUE = 2
 private const val MAX_MANUAL_VITAL_DIGITS_PER_COMPACT_VALUE = 3
+private val MANUAL_WEIGHT_PATTERN = Regex("""\d+(?:\.\d)?""")
 private val STEPS_SYNC_REQUIRED_PERMISSIONS = setOf(
     HealthPermission.getReadPermission(StepsRecord::class)
 )
@@ -3821,6 +4203,9 @@ private val MANUAL_VITAL_REQUIRED_PERMISSIONS = setOf(
     HealthPermission.getWritePermission(BloodPressureRecord::class),
     HealthPermission.getWritePermission(HeartRateRecord::class)
 )
+private val MANUAL_WEIGHT_REQUIRED_PERMISSIONS = setOf(
+    HealthPermission.getWritePermission(WeightRecord::class)
+)
 
 private fun healthPermissionTargets(permissions: Set<String>): List<String> = buildList {
     if (permissions.any { it in STEPS_SYNC_REQUIRED_PERMISSIONS || it in STEPS_WRITE_REQUIRED_PERMISSIONS }) add("歩数")
@@ -3830,7 +4215,12 @@ private fun healthPermissionTargets(permissions: Set<String>): List<String> = bu
                 it in MANUAL_VITAL_REQUIRED_PERMISSIONS
         }
     ) add("バイタル")
-    if (permissions.any { it in WEIGHT_SYNC_REQUIRED_PERMISSIONS || it in WEIGHT_WRITE_REQUIRED_PERMISSIONS }) add("体重")
+    if (permissions.any {
+            it in WEIGHT_SYNC_REQUIRED_PERMISSIONS ||
+                it in WEIGHT_WRITE_REQUIRED_PERMISSIONS ||
+                it in MANUAL_WEIGHT_REQUIRED_PERMISSIONS
+        }
+    ) add("体重")
     if (HealthPermission.PERMISSION_READ_HEALTH_DATA_IN_BACKGROUND in permissions) add("バックグラウンド")
 }.distinct()
 
