@@ -15,6 +15,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.speech.RecognizerIntent
 import android.text.InputType
+import android.util.Log
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -2909,14 +2910,16 @@ class MainActivity : ComponentActivity() {
         CoroutineScope(Dispatchers.Main).launch {
             val currentVersion = appVersionName().toSemanticVersion() ?: return@launch
             val release = withContext(Dispatchers.IO) {
-                runCatching { GitHubReleaseClient.latestRelease() }.getOrNull()
+                runCatching { GitHubReleaseClient.latestRelease() }
+                    .onFailure { Log.w(UPDATE_NOTICE_TAG, "Failed to check latest GitHub release.", it) }
+                    .getOrNull()
             } ?: return@launch
             if (release.version <= currentVersion) {
                 return@launch
             }
 
             views.message.text = "現在のバージョンは ${currentVersion.label} です。${release.version.label} が公開されています。"
-            views.downloadButton.setOnClickListener { openLatestRelease(release.downloadUrl) }
+            views.downloadButton.setOnClickListener { openLatestRelease(GITHUB_RELEASES_PAGE_URL) }
             views.card.visibility = View.VISIBLE
         }
     }
@@ -4244,6 +4247,9 @@ private val Int.label: String
 private val DISPLAY_DATE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
 
 private val DATA_SOURCE_ID_PATTERN = Regex("^[A-Za-z0-9-]{16,128}$")
+private const val UPDATE_NOTICE_TAG = "UpdateNotice"
+private const val GITHUB_RELEASES_PAGE_URL =
+    "https://github.com/BiaHoi-BaChien/sync-health-notion/releases"
 private const val GITHUB_RELEASES_ENDPOINT =
     "https://api.github.com/repos/BiaHoi-BaChien/sync-health-notion/releases?per_page=20"
 
@@ -4258,12 +4264,8 @@ private object GitHubReleaseClient {
                 val version = release.optString("tag_name")
                     .toSemanticVersion()
                     ?: return@mapNotNull null
-                AppRelease(
-                    version = version,
-                    downloadUrl = release.optString("html_url")
-                )
+                AppRelease(version = version)
             }
-            .filter { it.downloadUrl.isNotBlank() }
             .maxByOrNull { it.version }
     }
 
@@ -4288,8 +4290,7 @@ private object GitHubReleaseClient {
 }
 
 private data class AppRelease(
-    val version: SemanticVersion,
-    val downloadUrl: String
+    val version: SemanticVersion
 )
 
 private class NotionRequestException(
