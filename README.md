@@ -2,6 +2,8 @@
 
 Android app for Pixel devices that syncs step, vital, and weight data between Health Connect and Notion data sources.
 
+NotionはNotion Labs, Inc.の商標です。本アプリはNotion Labs, Inc.の公式アプリではなく、同社による提供・提携・承認を受けたものではありません。
+
 Each data type can be configured independently as `同期しない`, `HealthConnect→Notion`, or `Notion→HealthConnect`. Existing installations default to `HealthConnect→Notion`.
 
 ## Current scope
