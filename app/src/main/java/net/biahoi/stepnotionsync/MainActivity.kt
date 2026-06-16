@@ -376,9 +376,17 @@ class MainActivity : ComponentActivity() {
         )
         root.addButton("Health Connect権限を許可") { requestHealthPermission() }
 
+        root.addSectionTitle(
+            title = "Notionプロパティ設定",
+            helpText = """
+                歩数、バイタル、体重ごとに、同期方向、NotionのData Source ID、同期に使うプロパティ名を設定します。
+
+                タブを切り替えて対象データを選び、Notion側のデータソースで使っているプロパティ名と同じ名前を入力してください。Data Source IDはNotionの連携対象データソースをインテグレーションに共有してから設定します。
+            """.trimIndent()
+        )
         val tabButtons = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setPadding(0, (18 * density).toInt(), 0, 0)
+            setPadding(0, (10 * density).toInt(), 0, 0)
         }
         root.addView(tabButtons)
         val tabContent = LinearLayout(this).apply {
