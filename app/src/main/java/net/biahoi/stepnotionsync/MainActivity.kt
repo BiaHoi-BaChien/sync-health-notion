@@ -344,7 +344,7 @@ class MainActivity : ComponentActivity() {
         })
 
         root.addSectionTitle("共通設定")
-        tokenInput = root.addInput("Notion API Token", password = true)
+        tokenInput = root.addInput("ConnectionsのAccess Token", password = true)
         root.addSectionTitle("自動同期")
         autoSyncSpinner = root.addAutoSyncSpinner()
         root.addSectionTitle("Health Connect")
@@ -364,9 +364,9 @@ class MainActivity : ComponentActivity() {
             orientation = LinearLayout.VERTICAL
         }
         stepsDirectionSpinner = stepsTab.addSyncDirectionSpinner()
-        stepsDataSourceInput = stepsTab.addInput("歩数 Data Source ID")
-        stepsDatePropertyInput = stepsTab.addInput("歩数 Date property name")
-        stepsPropertyInput = stepsTab.addInput("Steps property name")
+        stepsDataSourceInput = stepsTab.addInput("歩数データベースのData sourceID")
+        stepsDatePropertyInput = stepsTab.addInput("歩数データベースの日付プロパティ名")
+        stepsPropertyInput = stepsTab.addInput("歩数データベースの歩数プロパティ名")
         tabContent.addView(stepsTab)
 
         val vitalsTab = LinearLayout(this).apply {
@@ -374,11 +374,11 @@ class MainActivity : ComponentActivity() {
             visibility = View.GONE
         }
         vitalsDirectionSpinner = vitalsTab.addSyncDirectionSpinner()
-        vitalsDataSourceInput = vitalsTab.addInput("バイタル Data Source ID")
-        vitalsMeasuredAtPropertyInput = vitalsTab.addInput("測定日時 property name")
-        systolicPropertyInput = vitalsTab.addInput("最高血圧 property name")
-        diastolicPropertyInput = vitalsTab.addInput("最低血圧 property name")
-        heartRatePropertyInput = vitalsTab.addInput("脈拍 property name")
+        vitalsDataSourceInput = vitalsTab.addInput("バイタルデータベースのData sourceID")
+        vitalsMeasuredAtPropertyInput = vitalsTab.addInput("バイタルデータベースの日付プロパティ名")
+        systolicPropertyInput = vitalsTab.addInput("バイタルデータベースの最高血圧プロパティ名")
+        diastolicPropertyInput = vitalsTab.addInput("バイタルデータベースの最低血圧プロパティ名")
+        heartRatePropertyInput = vitalsTab.addInput("バイタルデータベースの脈拍プロパティ名")
         tabContent.addView(vitalsTab)
 
         val weightTab = LinearLayout(this).apply {
@@ -386,9 +386,9 @@ class MainActivity : ComponentActivity() {
             visibility = View.GONE
         }
         weightDirectionSpinner = weightTab.addSyncDirectionSpinner()
-        weightDataSourceInput = weightTab.addInput("体重 Data Source ID")
-        weightMeasuredAtPropertyInput = weightTab.addInput("体重 Date property name")
-        weightPropertyInput = weightTab.addInput("体重 property name")
+        weightDataSourceInput = weightTab.addInput("体重データベースのData sourceID")
+        weightMeasuredAtPropertyInput = weightTab.addInput("体重データベースの日付プロパティ名")
+        weightPropertyInput = weightTab.addInput("体重データベースの体重プロパティ名")
         tabContent.addView(weightTab)
 
         val tabs = listOf(
@@ -413,7 +413,7 @@ class MainActivity : ComponentActivity() {
             saveSettings()
             setStatusMessage("設定を保存しました。", floating = true)
         }
-        root.addButton("TOPへ戻る") { showTopPage() }
+        root.addButton("トップへ戻る") { showTopPage() }
 
         statusText = TextView(this).apply {
             text = "NotionのData Source IDとプロパティ名を入力してください。"
