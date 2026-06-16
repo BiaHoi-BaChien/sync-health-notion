@@ -386,6 +386,7 @@ class MainActivity : ComponentActivity() {
                 タブを切り替えて対象データを選び、Notion側のデータソースで使っているプロパティ名と同じ名前を入力してください。Data Source IDはNotionの連携対象データソースをインテグレーションに共有してから設定します。
             """.trimIndent()
         )
+        root.addButton("設定マニュアルを開く") { openManualPage() }
         val tabButtons = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(0, (10 * density).toInt(), 0, 0)
@@ -2945,6 +2946,14 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun openManualPage() {
+        runCatching {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(MANUAL_PAGE_URL)))
+        }.onFailure {
+            setStatusMessage("設定マニュアルを開けませんでした。", floating = true)
+        }
+    }
+
 }
 
 private data class UpdateNoticeViews(
@@ -4265,6 +4274,8 @@ private const val GITHUB_RELEASES_PAGE_URL =
     "https://github.com/BiaHoi-BaChien/sync-health-notion/releases"
 private const val GITHUB_RELEASES_ENDPOINT =
     "https://api.github.com/repos/BiaHoi-BaChien/sync-health-notion/releases?per_page=20"
+private const val MANUAL_PAGE_URL =
+    "https://clb-biahoi.net/manual-health-notion-sync.html"
 
 private object GitHubReleaseClient {
     fun latestRelease(): AppRelease? {
