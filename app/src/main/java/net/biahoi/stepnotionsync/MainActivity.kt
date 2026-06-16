@@ -86,6 +86,9 @@ import java.util.concurrent.TimeUnit
 import kotlin.coroutines.coroutineContext
 import kotlin.coroutines.resume
 
+private const val NOTION_TRADEMARK_NOTICE =
+    "NotionはNotion Labs, Inc.の商標です。本アプリはNotion Labs, Inc.の公式アプリではなく、同社による提供・提携・承認を受けたものではありません。"
+
 class MainActivity : ComponentActivity() {
     private val requiredPermissions = setOf(
         HealthPermission.getReadPermission(StepsRecord::class),
@@ -447,6 +450,7 @@ class MainActivity : ComponentActivity() {
             setStatusMessage("設定を保存しました。", floating = true)
         }
         root.addButton("トップへ戻る") { showTopPage() }
+        root.addTrademarkNotice()
 
         statusText = TextView(this).apply {
             text = "NotionのData Source IDとプロパティ名を入力してください。"
@@ -924,6 +928,17 @@ class MainActivity : ComponentActivity() {
         row.addView(button)
         addView(row)
         return button
+    }
+
+    private fun LinearLayout.addTrademarkNotice() {
+        val density = resources.displayMetrics.density
+        addView(TextView(context).apply {
+            text = NOTION_TRADEMARK_NOTICE
+            textSize = 12.5f
+            setTextColor(Color.parseColor("#AAB7C4"))
+            setLineSpacing(0f, 1.15f)
+            setPadding(0, (18 * density).toInt(), 0, 0)
+        })
     }
 
     private fun LinearLayout.addSectionTitle(title: String, helpText: String) {
