@@ -352,9 +352,7 @@ class MainActivity : ComponentActivity() {
         root.addSectionTitle(
             title = "共通設定",
             helpText = """
-                Notionとの接続に使うAPIトークンを設定します。
-
-                画面下部の「歩数」「バイタル」「体重」タブでは、同期方向、NotionのData Source ID、各プロパティ名を設定できます。Notion側で連携対象のデータソースをインテグレーションに共有してから入力してください。
+                Notionとの接続に使うAccess Tokenを設定します。
             """.trimIndent()
         )
         tokenInput = root.addInput("ConnectionsのAccess Token", password = true)
