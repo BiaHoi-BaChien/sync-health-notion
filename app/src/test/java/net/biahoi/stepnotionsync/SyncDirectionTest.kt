@@ -95,6 +95,25 @@ class SyncDirectionTest {
     }
 
     @Test
+    fun vitalsAndWeightAlsoRequireCompleteNotionSettings() {
+        val missingVitalsProperty = config(
+            stepsDirection = SyncDirection.DISABLED,
+            vitalsDirection = SyncDirection.HEALTH_CONNECT_TO_NOTION,
+            heartRateProperty = ""
+        )
+        val missingWeightProperty = config(
+            stepsDirection = SyncDirection.DISABLED,
+            weightDirection = SyncDirection.HEALTH_CONNECT_TO_NOTION,
+            weightProperty = ""
+        )
+
+        assertFalse(missingVitalsProperty.hasVitalsSettings())
+        assertFalse(missingVitalsProperty.hasAnySettings())
+        assertFalse(missingWeightProperty.hasWeightSettings())
+        assertFalse(missingWeightProperty.hasAnySettings())
+    }
+
+    @Test
     fun directionSelectsReadOrWritePermissionsPerDataType() {
         assertTrue(SyncDirection.DISABLED.stepsPermissions().isEmpty())
         assertEquals(
@@ -160,7 +179,9 @@ class SyncDirectionTest {
         stepsDirection: SyncDirection = SyncDirection.HEALTH_CONNECT_TO_NOTION,
         vitalsDirection: SyncDirection = SyncDirection.DISABLED,
         weightDirection: SyncDirection = SyncDirection.DISABLED,
-        stepsDataSourceId: String = "steps-data-source"
+        stepsDataSourceId: String = "steps-data-source",
+        heartRateProperty: String = "脈拍",
+        weightProperty: String = "体重"
     ) = SyncConfig(
         token = "token",
         stepsDataSourceId = stepsDataSourceId,
@@ -170,10 +191,10 @@ class SyncDirectionTest {
         vitalsMeasuredAtProperty = "日付",
         systolicProperty = "収縮期",
         diastolicProperty = "拡張期",
-        heartRateProperty = "脈拍",
+        heartRateProperty = heartRateProperty,
         weightDataSourceId = "weight-data-source",
         weightMeasuredAtProperty = "日付",
-        weightProperty = "体重",
+        weightProperty = weightProperty,
         stepsDirection = stepsDirection,
         vitalsDirection = vitalsDirection,
         weightDirection = weightDirection
