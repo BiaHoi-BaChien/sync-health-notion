@@ -213,7 +213,7 @@ class MainActivity : ComponentActivity() {
             gravity = Gravity.CENTER_VERTICAL
         }
         header.addView(TextView(this).apply {
-            text = "Health Notion Sync"
+            text = "健康データ Notion 同期"
             textSize = 30f
             setTextColor(Color.WHITE)
             typeface = Typeface.DEFAULT_BOLD

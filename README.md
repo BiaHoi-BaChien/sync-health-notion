@@ -1,4 +1,4 @@
-# Step Notion Sync
+# 健康データ Notion 同期
 
 Android app for Pixel devices that syncs step, vital, and weight data between Health Connect and Notion data sources.
 

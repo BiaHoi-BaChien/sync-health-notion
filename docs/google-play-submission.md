@@ -56,12 +56,12 @@ Health Connectに保存された歩数、血圧、心拍、体重データを、
 
 ## ストア掲載素材
 
-- アプリ名: Health Notion Sync
+- アプリ名: 健康データ Notion 同期
 - 短い説明案: Health Connectの歩数、血圧、心拍、体重をNotionと同期します。
 - 詳細説明案:
 
 ```text
-Health Notion Syncは、Health Connectに保存された歩数、血圧、心拍、体重を、ユーザー自身のNotionデータソースと同期する個人向けアプリです。データ種別ごとに同期しない、Health ConnectからNotion、NotionからHealth Connectを選択できます。Notion access tokenは端末内で暗号化保存され、アプリ提供者の独自サーバーには送信されません。
+健康データ Notion 同期は、Health Connectに保存された歩数、血圧、心拍、体重を、ユーザー自身のNotionデータソースと同期する個人向けアプリです。データ種別ごとに同期しない、Health ConnectからNotion、NotionからHealth Connectを選択できます。Notion access tokenは端末内で暗号化保存され、アプリ提供者の独自サーバーには送信されません。
 ```
 
 必要素材:
