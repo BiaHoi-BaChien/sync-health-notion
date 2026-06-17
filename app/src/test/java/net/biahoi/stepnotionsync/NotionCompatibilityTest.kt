@@ -21,10 +21,21 @@ class NotionCompatibilityTest {
     }
 
     @Test
+    fun retryDelayIgnoresInvalidRetryAfterAndCapsExponentialBackoff() {
+        assertEquals(500L, notionRetryDelayMillis(429, "not-a-number", completedAttempts = 0))
+        assertEquals(0L, notionRetryDelayMillis(429, "-1", completedAttempts = 0))
+        assertEquals(60_000L, notionRetryDelayMillis(503, null, completedAttempts = 20))
+    }
+
+    @Test
     fun incompleteQueryIsReportedInsteadOfSilentlyAccepted() {
         assertEquals(
             "Notion APIの検索結果が不完全です(query_result_limit_reached)。同期範囲を短くしてください。",
             incompleteQueryError("incomplete", "query_result_limit_reached")
+        )
+        assertEquals(
+            "Notion APIの検索結果が不完全です(unknown)。同期範囲を短くしてください。",
+            incompleteQueryError("incomplete", "")
         )
         assertNull(incompleteQueryError("complete", null))
     }

@@ -41,12 +41,22 @@ class WeightMeasurementTest {
     fun acceptsManualWeightWithOneDecimalPlace() {
         assertEquals(61.2, parseManualWeight("61.2"), 0.0)
         assertEquals(61.0, parseManualWeight("61"), 0.0)
+        assertEquals(61.2, parseManualWeight(" 61.2 "), 0.0)
     }
 
     @Test
     fun rejectsManualWeightWithMoreThanOneDecimalPlace() {
         assertThrows(IllegalArgumentException::class.java) {
             parseManualWeight("61.25")
+        }
+    }
+
+    @Test
+    fun rejectsManualWeightThatIsBlankZeroNegativeOrNonNumeric() {
+        listOf("", "0", "-1", "61,2", "61 kg").forEach { value ->
+            assertThrows(IllegalArgumentException::class.java) {
+                parseManualWeight(value)
+            }
         }
     }
 

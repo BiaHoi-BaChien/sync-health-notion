@@ -3590,7 +3590,7 @@ private data class NotionStepPage(
     val steps: Long? = null
 )
 
-private data class NotionDateValue(
+internal data class NotionDateValue(
     val date: LocalDate,
     val timestamp: Instant?
 )
@@ -4148,16 +4148,16 @@ private fun JSONObject.notionInstant(property: String): Instant? =
         ?.takeIf { it.isNotBlank() }
         ?.let { runCatching { Instant.parse(it) }.getOrNull() }
 
-private fun Instant.toNotionDateTime(): String =
+internal fun Instant.toNotionDateTime(): String =
     DateTimeFormatter.ISO_OFFSET_DATE_TIME.format(atZone(ZoneId.systemDefault()))
 
-private fun String.toNotionDateValue(): NotionDateValue =
+internal fun String.toNotionDateValue(): NotionDateValue =
     NotionDateValue(
         date = LocalDate.parse(take(10)),
         timestamp = runCatching { Instant.parse(this) }.getOrNull()
     )
 
-private fun notionTimestampSortValue(timestamp: Instant?): Instant =
+internal fun notionTimestampSortValue(timestamp: Instant?): Instant =
     timestamp ?: Instant.EPOCH
 
 private const val GOOGLE_FIT_PACKAGE_NAME = "com.google.android.apps.fitness"

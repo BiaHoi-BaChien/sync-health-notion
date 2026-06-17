@@ -22,4 +22,19 @@ class StepMeasurementTest {
         assertEquals(newTime, unsynced.single().recordedAt)
         assertEquals(2_000, unsynced.single().steps)
     }
+
+    @Test
+    fun reverseSyncKeepsDistinctMeasurementTimesForSameDay() {
+        val date = LocalDate.parse("2026-06-13")
+        val firstTime = Instant.parse("2026-06-13T08:00:00Z")
+        val secondTime = Instant.parse("2026-06-13T20:00:00Z")
+        val measurements = listOf(
+            DailyStepMeasurement(date, firstTime, 1_000),
+            DailyStepMeasurement(date, secondTime, 2_000)
+        )
+
+        val unsynced = selectUnsyncedStepMeasurements(measurements, emptySet())
+
+        assertEquals(measurements, unsynced)
+    }
 }

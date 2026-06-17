@@ -32,4 +32,13 @@ class AutoSyncScheduleTest {
 
         assertEquals(Duration.ofDays(1).toMillis(), delay)
     }
+
+    @Test
+    fun invalidScheduleFallsBackToNextMidnight() {
+        val now = LocalDateTime.of(2026, 6, 11, 22, 30)
+
+        val delay = initialAutoSyncDelayMillis("invalid", now)
+
+        assertEquals(Duration.ofHours(1).plusMinutes(30).toMillis(), delay)
+    }
 }
