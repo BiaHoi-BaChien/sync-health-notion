@@ -4,7 +4,7 @@ plugins {
 
 import java.util.Properties
 
-val appVersionName = "0.1.7"
+val appVersionName = "0.1.8"
 val appVersionCode = versionCodeFrom(appVersionName)
 val releaseKeystorePropertiesFile = rootProject.file("keystore.properties")
 val releaseKeystoreProperties = Properties().apply {
@@ -59,7 +59,7 @@ android {
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "net.biahoi.stepnotionsync"
+        applicationId = "com.sugi.synchealthnotion"
         minSdk = 28
         targetSdk = 36
         versionCode = appVersionCode
