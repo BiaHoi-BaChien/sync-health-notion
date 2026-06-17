@@ -4,7 +4,7 @@
 
 ## アプリ名
 
-Health Notion Sync
+健康データ Notion 同期
 
 ## 取得・利用する情報
 
