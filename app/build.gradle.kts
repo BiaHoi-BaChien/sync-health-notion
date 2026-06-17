@@ -59,7 +59,7 @@ android {
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "net.biahoi.stepnotionsync"
+        applicationId = "com.sugi.synchealthnotion"
         minSdk = 28
         targetSdk = 36
         versionCode = appVersionCode
