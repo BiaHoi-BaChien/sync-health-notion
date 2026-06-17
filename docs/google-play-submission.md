@@ -1,13 +1,16 @@
 # Google Play 登録チェックリスト
 
-この文書は Play Console 申請時に入力する内容の下書きです。公開前に実際の配布地域、サポート窓口、プライバシーポリシーURLに合わせて更新してください。
+この文書は Play Console 申請時に入力する内容の下書きです。公開前に実際の配布地域に合わせて更新してください。
+
+- サポートメールアドレス: sugi@clb-biahoi.net
+- プライバシーポリシーURL: https://clb-biahoi.net/privacy-policy-ja-health-notion-sync.html
 
 ## 登録前の必須確認
 
 - `app/build.gradle.kts` の `versionName` と `versionCode` が前回公開版より大きいこと。
 - `bundleRelease` で `app/build/outputs/bundle/release/app-release.aab` が生成できること。
 - 実機で Health Connect 権限許可、Notion 設定保存、手動入力、同期、バックグラウンド自動同期を確認すること。
-- プライバシーポリシーをWeb上に公開し、Play ConsoleのPrivacy policy URLへ設定すること。
+- プライバシーポリシーをWeb上に公開し、Play ConsoleのPrivacy policy URLへ `https://clb-biahoi.net/privacy-policy-ja-health-notion-sync.html` を設定すること。
 - Health Connect権限の用途説明、Data safety、アプリ内説明が一致していること。
 
 ## Data safety 入力方針
@@ -66,8 +69,8 @@ Health Notion Syncは、Health Connectに保存された歩数、血圧、心拍
 - スマートフォン用スクリーンショット 2枚以上。
 - 512x512 アプリアイコン。
 - 1024x500 Feature Graphic。
-- サポートメールアドレス。
-- 公開済みプライバシーポリシーURL。
+- サポートメールアドレス: sugi@clb-biahoi.net
+- 公開済みプライバシーポリシーURL: https://clb-biahoi.net/privacy-policy-ja-health-notion-sync.html
 
 ## リリース確認コマンド
 

@@ -1,6 +1,6 @@
-# プライバシーポリシー雛形
+# プライバシーポリシー
 
-この文書は公開前の雛形です。公開URL、事業者名、問い合わせ先、施行日を実際の内容に置き換えてから利用してください。
+公開URL: https://clb-biahoi.net/privacy-policy-ja-health-notion-sync.html
 
 ## アプリ名
 
@@ -51,7 +51,7 @@ Notion access tokenは、Android Keystoreで保護された鍵を使って端末
 
 ## 問い合わせ先
 
-公開前に問い合わせ先メールアドレスを記載してください。
+sugi@clb-biahoi.net
 
 ## 改定
 
@@ -59,4 +59,4 @@ Notion access tokenは、Android Keystoreで保護された鍵を使って端末
 
 ## 施行日
 
-公開前に施行日を記載してください。
+2026-06-17
