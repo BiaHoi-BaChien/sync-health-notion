@@ -74,7 +74,7 @@ The debug APK is generated at:
 app\build\outputs\apk\debug\app-debug.apk
 ```
 
-Release APK signing reads environment variables first:
+Release signing reads environment variables first:
 
 - `ANDROID_RELEASE_STORE_FILE`
 - `ANDROID_RELEASE_STORE_PASSWORD`
@@ -92,9 +92,23 @@ keyPassword=...
 
 Environment variables override matching values in `keystore.properties`. The signing configuration must contain all four values or none. `keystore.properties`, `*.jks`, `*.keystore`, `*.p12`, and `*.pfx` are local secret files and must not be committed.
 
+For Google Play, build the Android App Bundle:
+
+```powershell
+.\gradlew.bat bundleRelease
+```
+
+The release AAB is generated at:
+
+```text
+app\build\outputs\bundle\release\app-release.aab
+```
+
+Before uploading to Google Play, review `docs/google-play-submission.md` and publish a privacy policy based on `docs/privacy-policy-ja.md`.
+
 ## GitHub release automation
 
-When source is pushed or merged into `main` with a changed `appVersionName`, GitHub Actions builds a signed release APK and creates a GitHub Release with the APK attached. Changes that leave `appVersionName` unchanged skip the release build, release upload, and release notification path.
+When source is pushed or merged into `main` with a changed `appVersionName`, GitHub Actions builds a signed release AAB and creates a GitHub Release with the AAB attached. Changes that leave `appVersionName` unchanged skip the release build, release upload, and release notification path.
 
 Before merging a release change, update `appVersionName` in `app/build.gradle.kts`. Android `versionCode` is generated from that SemVer value as `MAJOR * 10000 + MINOR * 100 + PATCH`, so `0.0.3` builds with `versionCode 3` and future release APKs remain installable over older releases.
 

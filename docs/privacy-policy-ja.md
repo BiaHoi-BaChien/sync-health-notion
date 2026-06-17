@@ -1,0 +1,62 @@
+# プライバシーポリシー
+
+公開URL: https://clb-biahoi.net/privacy-policy-ja-health-notion-sync.html
+
+## アプリ名
+
+Health Notion Sync
+
+## 取得・利用する情報
+
+本アプリは、ユーザーが許可した場合に、Health Connectから以下のデータを読み取ります。
+
+- 歩数
+- 血圧
+- 心拍
+- 体重
+
+本アプリは、ユーザーの操作または同期設定に基づき、以下のデータをHealth Connectへ書き込む場合があります。
+
+- 歩数
+- 血圧
+- 心拍
+- 体重
+
+本アプリは、ユーザーが入力したNotion access token、Notion Data Source ID、Notionプロパティ名、同期設定、自動同期設定を端末内に保存します。
+
+## 利用目的
+
+取得した情報は、ユーザーが指定したNotionデータソースとHealth Connectの間で健康・フィットネスデータを同期するために利用します。
+
+## 外部送信
+
+本アプリは、ユーザーが入力したNotion access tokenを使用して、Notion APIへデータを送信またはNotion APIからデータを取得します。アプリ提供者が管理する独自サーバーへ健康データやNotion access tokenを送信することはありません。
+
+音声入力を利用する場合、Androidの音声認識機能を起動します。音声認識の処理は端末やGoogleの音声認識サービスの設定に従います。本アプリは録音データを独自に保存しません。
+
+## 保存と保護
+
+Notion access tokenは、Android Keystoreで保護された鍵を使って端末内で暗号化保存します。Health ConnectデータはHealth Connectの管理下に保存されます。Notionへ同期されたデータはユーザー自身のNotionワークスペースに保存されます。
+
+## 削除方法
+
+- Notion access tokenは、アプリの設定画面でトークンを空にして保存することで削除できます。
+- アプリ内設定は、Androidのアプリ情報からストレージを削除するか、アプリをアンインストールすることで削除できます。
+- Health Connect上のデータは、Health Connectまたは対応アプリから削除できます。
+- Notion上のデータは、ユーザー自身のNotionワークスペースで削除できます。
+
+## 第三者提供
+
+本アプリは、法令に基づく場合を除き、アプリ提供者が取得した個人情報を第三者へ提供しません。
+
+## 問い合わせ先
+
+sugi@clb-biahoi.net
+
+## 改定
+
+本ポリシーは、必要に応じて変更されることがあります。重要な変更がある場合は、アプリまたは配布ページで通知します。
+
+## 施行日
+
+2026-06-17
