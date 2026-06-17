@@ -1,4 +1,4 @@
-name: Build signed APK release
+name: Build signed Android release
 
 on:
   push:
@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   release:
-    name: Build and publish signed APK
+    name: Build and publish signed AAB
     runs-on: ubuntu-24.04
 
     steps:
@@ -71,14 +71,14 @@ jobs:
         if: steps.version_guard.outputs.should_release == 'true'
         run: chmod +x gradlew
 
-      - name: Build signed release APK
+      - name: Build signed release AAB
         if: steps.version_guard.outputs.should_release == 'true'
         env:
           ANDROID_RELEASE_STORE_FILE: release-key.jks
           ANDROID_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_STORE_PASSWORD }}
           ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
           ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
-        run: ./gradlew assembleRelease
+        run: ./gradlew bundleRelease
 
       - name: Remove release keystore
         if: always() && steps.version_guard.outputs.should_release == 'true'
@@ -91,15 +91,15 @@ jobs:
           version_name="$(sed -nE 's/^val appVersionName = "([^"]+)"/\1/p' app/build.gradle.kts)"
           short_sha="$(git rev-parse --short HEAD)"
           tag_name="v${version_name}"
-          apk_path="$(find app/build/outputs/apk/release -name '*.apk' -print -quit)"
+          aab_path="$(find app/build/outputs/bundle/release -name '*.aab' -print -quit)"
 
           test -n "$version_name"
-          test -n "$apk_path"
+          test -n "$aab_path"
 
           echo "version_name=$version_name" >> "$GITHUB_OUTPUT"
           echo "short_sha=$short_sha" >> "$GITHUB_OUTPUT"
           echo "tag_name=$tag_name" >> "$GITHUB_OUTPUT"
-          echo "apk_path=$apk_path" >> "$GITHUB_OUTPUT"
+          echo "aab_path=$aab_path" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub release
         if: steps.version_guard.outputs.should_release == 'true'
@@ -108,15 +108,15 @@ jobs:
           TAG_NAME: ${{ steps.metadata.outputs.tag_name }}
           VERSION_NAME: ${{ steps.metadata.outputs.version_name }}
           SHORT_SHA: ${{ steps.metadata.outputs.short_sha }}
-          APK_PATH: ${{ steps.metadata.outputs.apk_path }}
+          AAB_PATH: ${{ steps.metadata.outputs.aab_path }}
         run: |
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
-            gh release upload "$TAG_NAME" "$APK_PATH" --clobber
+            gh release upload "$TAG_NAME" "$AAB_PATH" --clobber
           else
-            gh release create "$TAG_NAME" "$APK_PATH" \
+            gh release create "$TAG_NAME" "$AAB_PATH" \
               --target "$GITHUB_SHA" \
               --title "sync-health-notion $VERSION_NAME ($SHORT_SHA)" \
-              --notes "Automated signed APK build from main commit $GITHUB_SHA."
+              --notes "Automated signed AAB build from main commit $GITHUB_SHA."
           fi
 
       - name: Skip release
