@@ -21,3 +21,6 @@ keystore.properties
 # OS files
 .DS_Store
 Thumbs.db
+
+# Store assets
+store-assets/
