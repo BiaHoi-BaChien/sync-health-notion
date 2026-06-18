@@ -16,6 +16,7 @@ import android.os.Bundle
 import android.speech.RecognizerIntent
 import android.text.InputType
 import android.util.Log
+import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -215,6 +216,13 @@ class MainActivity : ComponentActivity() {
         header.addView(TextView(this).apply {
             text = "健康データ Notion 同期"
             textSize = 30f
+            setSingleLine(true)
+            setAutoSizeTextTypeUniformWithConfiguration(
+                18,
+                30,
+                1,
+                TypedValue.COMPLEX_UNIT_SP,
+            )
             setTextColor(Color.WHITE)
             typeface = Typeface.DEFAULT_BOLD
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
