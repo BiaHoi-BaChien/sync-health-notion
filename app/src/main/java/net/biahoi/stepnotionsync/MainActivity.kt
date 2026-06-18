@@ -347,11 +347,25 @@ class MainActivity : ComponentActivity() {
             )
         }
 
-        root.addView(TextView(this).apply {
-            text = "設定"
-            textSize = 28f
-            setTextColor(Color.WHITE)
-            typeface = Typeface.DEFAULT_BOLD
+        root.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(TextView(this@MainActivity).apply {
+                text = "設定"
+                textSize = 28f
+                setTextColor(Color.WHITE)
+                typeface = Typeface.DEFAULT_BOLD
+                layoutParams = LinearLayout.LayoutParams(
+                    0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    1f
+                )
+            })
+            addView(createCardTextButton(
+                label = "設定ガイド",
+                description = "設定ガイドを開く",
+                onClick = ::openManualPage
+            ))
         })
         root.addView(TextView(this).apply {
             text = "バージョン ${appVersionName()}"
@@ -394,7 +408,6 @@ class MainActivity : ComponentActivity() {
                 タブを切り替えて対象データを選び、Notion側のデータソースで使っているプロパティ名と同じ名前を入力してください。Data Source IDはNotionの連携対象データソースをインテグレーションに共有してから設定します。
             """.trimIndent()
         )
-        root.addButton("設定マニュアルを開く") { openManualPage() }
         val tabButtons = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(0, (10 * density).toInt(), 0, 0)

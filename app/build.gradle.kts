@@ -4,8 +4,8 @@ plugins {
 
 import java.util.Properties
 
-val appVersionName = "0.1.9"
-val appVersionCode = versionCodeFrom(appVersionName)
+val appVersionName = "0.1.10"
+val appVersionCode = 110
 val releaseKeystorePropertiesFile = rootProject.file("keystore.properties")
 val releaseKeystoreProperties = Properties().apply {
     if (releaseKeystorePropertiesFile.isFile) {
@@ -25,34 +25,18 @@ val releaseSigningValues = mapOf(
     "keyPassword" to releaseSigningValue("ANDROID_RELEASE_KEY_PASSWORD", "keyPassword"),
 )
 
-fun versionCodeFrom(versionName: String): Int {
-    val parts = versionName.split(".")
-    require(parts.size == 3) {
-        "appVersionName must use MAJOR.MINOR.PATCH format: $versionName"
-    }
-
-    val (major, minor, patch) = parts.map { part ->
-        part.toIntOrNull() ?: error("appVersionName contains a non-numeric segment: $versionName")
-    }
-
-    require(major >= 0 && minor in 0..99 && patch in 0..99) {
-        "appVersionName must satisfy MAJOR >= 0, MINOR 0..99, PATCH 0..99: $versionName"
-    }
-
-    val versionCode = major * 10_000 + minor * 100 + patch
-    require(versionCode > 0) {
-        "appVersionName must produce a positive Android versionCode: $versionName"
-    }
-
-    return versionCode
-}
-
 val configuredReleaseSigningValues = releaseSigningValues.filterValues { it != null }
 require(configuredReleaseSigningValues.isEmpty() || configuredReleaseSigningValues.size == releaseSigningValues.size) {
     val missingValues = releaseSigningValues.filterValues { it == null }.keys.joinToString()
     "Release signing configuration is incomplete. Missing: $missingValues"
 }
 val hasReleaseSigningConfig = configuredReleaseSigningValues.isNotEmpty()
+val releaseBuildRequested = gradle.startParameter.taskNames.any { taskName ->
+    taskName.substringAfterLast(':').endsWith("Release", ignoreCase = true)
+}
+require(!releaseBuildRequested || hasReleaseSigningConfig) {
+    "Release builds require the existing release keystore configuration."
+}
 
 android {
     namespace = "net.biahoi.stepnotionsync"
@@ -89,7 +73,7 @@ android {
 androidComponents {
     onVariants(selector().withBuildType("release")) { variant ->
         variant.outputs.forEach { output ->
-            output.outputFileName.set("sync-health-notion-v$appVersionName-release.apk")
+            output.outputFileName.set("sync-health-notion-v$appVersionName-$appVersionCode-release.apk")
         }
     }
 }

@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   release:
-    name: Build and publish signed AAB
+    name: Build and publish signed APK
     runs-on: ubuntu-24.04
 
     steps:
@@ -26,30 +26,35 @@ jobs:
       - name: Check release version change
         id: version_guard
         run: |
-          current_version="$(sed -nE 's/^val appVersionName = "([^"]+)"/\1/p' app/build.gradle.kts)"
-          test -n "$current_version"
+          current_version_name="$(sed -nE 's/^val appVersionName = "([^"]+)"/\1/p' app/build.gradle.kts)"
+          current_version_code="$(sed -nE 's/^val appVersionCode = ([0-9]+)/\1/p' app/build.gradle.kts)"
+          test -n "$current_version_name"
+          test -n "$current_version_code"
 
           before_sha="${{ github.event.before }}"
-          previous_version=""
+          previous_version_code=""
 
           if [ -n "$before_sha" ] && [ "$before_sha" != "0000000000000000000000000000000000000000" ] && git cat-file -e "$before_sha:app/build.gradle.kts" 2>/dev/null; then
-            previous_version="$(git show "$before_sha:app/build.gradle.kts" | sed -nE 's/^val appVersionName = "([^"]+)"/\1/p')"
+            previous_version_code="$(git show "$before_sha:app/build.gradle.kts" | sed -nE 's/^val appVersionCode = ([0-9]+)/\1/p')"
           fi
 
           if [ "$before_sha" = "0000000000000000000000000000000000000000" ]; then
             should_release=true
-          elif [ -z "$previous_version" ]; then
+          elif [ -z "$previous_version_code" ]; then
             should_release=false
-          elif [ "$previous_version" != "$current_version" ]; then
+          elif [ "$current_version_code" -gt "$previous_version_code" ]; then
             should_release=true
-          else
+          elif [ "$current_version_code" -eq "$previous_version_code" ]; then
             should_release=false
+          else
+            echo "appVersionCode must be greater than the previous value: $previous_version_code -> $current_version_code" >&2
+            exit 1
           fi
 
-          echo "current_version=$current_version" >> "$GITHUB_OUTPUT"
-          echo "previous_version=$previous_version" >> "$GITHUB_OUTPUT"
+          echo "current_version_name=$current_version_name" >> "$GITHUB_OUTPUT"
+          echo "current_version_code=$current_version_code" >> "$GITHUB_OUTPUT"
           echo "should_release=$should_release" >> "$GITHUB_OUTPUT"
-          echo "Release version changed: $previous_version -> $current_version ($should_release)"
+          echo "Release versionCode changed: $previous_version_code -> $current_version_code ($should_release)"
 
       - name: Set up JDK
         if: steps.version_guard.outputs.should_release == 'true'
@@ -73,14 +78,14 @@ jobs:
         if: steps.version_guard.outputs.should_release == 'true'
         run: chmod +x gradlew
 
-      - name: Build signed release AAB
+      - name: Build signed release APK
         if: steps.version_guard.outputs.should_release == 'true'
         env:
           ANDROID_RELEASE_STORE_FILE: upload-keystore.jks
           ANDROID_RELEASE_STORE_PASSWORD: ${{ secrets.ANDROID_UPLOAD_STORE_PASSWORD }}
           ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_UPLOAD_KEY_ALIAS }}
           ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_UPLOAD_KEY_PASSWORD }}
-        run: ./gradlew bundleRelease
+        run: ./gradlew assembleRelease
 
       - name: Remove upload keystore
         if: always() && steps.version_guard.outputs.should_release == 'true'
@@ -91,17 +96,29 @@ jobs:
         id: metadata
         run: |
           version_name="$(sed -nE 's/^val appVersionName = "([^"]+)"/\1/p' app/build.gradle.kts)"
+          version_code="$(sed -nE 's/^val appVersionCode = ([0-9]+)/\1/p' app/build.gradle.kts)"
           short_sha="$(git rev-parse --short HEAD)"
-          tag_name="v${version_name}"
-          aab_path="$(find app/build/outputs/bundle/release -name '*.aab' -print -quit)"
+          tag_name="v${version_name}-${version_code}"
+          apk_path="$(find app/build/outputs/apk/release -name '*.apk' -print -quit)"
 
           test -n "$version_name"
-          test -n "$aab_path"
+          test -n "$version_code"
+          test -n "$apk_path"
 
           echo "version_name=$version_name" >> "$GITHUB_OUTPUT"
+          echo "version_code=$version_code" >> "$GITHUB_OUTPUT"
           echo "short_sha=$short_sha" >> "$GITHUB_OUTPUT"
           echo "tag_name=$tag_name" >> "$GITHUB_OUTPUT"
-          echo "aab_path=$aab_path" >> "$GITHUB_OUTPUT"
+          echo "apk_path=$apk_path" >> "$GITHUB_OUTPUT"
+
+      - name: Verify release APK signature
+        if: steps.version_guard.outputs.should_release == 'true'
+        env:
+          APK_PATH: ${{ steps.metadata.outputs.apk_path }}
+        run: |
+          apksigner_path="$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -n 1)"
+          test -n "$apksigner_path"
+          "$apksigner_path" verify --print-certs "$APK_PATH"
 
       - name: Create GitHub release
         if: steps.version_guard.outputs.should_release == 'true'
@@ -110,18 +127,18 @@ jobs:
           TAG_NAME: ${{ steps.metadata.outputs.tag_name }}
           VERSION_NAME: ${{ steps.metadata.outputs.version_name }}
           SHORT_SHA: ${{ steps.metadata.outputs.short_sha }}
-          AAB_PATH: ${{ steps.metadata.outputs.aab_path }}
+          APK_PATH: ${{ steps.metadata.outputs.apk_path }}
         run: |
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
-            gh release upload "$TAG_NAME" "$AAB_PATH" --clobber
+            gh release upload "$TAG_NAME" "$APK_PATH" --clobber
           else
-            gh release create "$TAG_NAME" "$AAB_PATH" \
+            gh release create "$TAG_NAME" "$APK_PATH" \
               --target "$GITHUB_SHA" \
               --title "sync-health-notion $VERSION_NAME ($SHORT_SHA)" \
-              --notes "Automated signed AAB build from main commit $GITHUB_SHA."
+              --notes "Automated signed APK build from main commit $GITHUB_SHA."
           fi
 
       - name: Skip release
         if: steps.version_guard.outputs.should_release != 'true'
         run: |
-          echo "appVersionName is unchanged (${{ steps.version_guard.outputs.current_version }}); skipping signed APK release."
+          echo "appVersionCode is unchanged (${{ steps.version_guard.outputs.current_version_code }}); skipping signed APK release."
