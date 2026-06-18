@@ -84,7 +84,7 @@ Release signing reads environment variables first:
 For local builds, copy `keystore.properties.example` to the gitignored `keystore.properties` and enter the local values:
 
 ```properties
-storeFile=release-key.jks
+storeFile=upload-keystore.jks
 storePassword=...
 keyAlias=...
 keyPassword=...
@@ -114,15 +114,21 @@ Before merging a release change, update `appVersionName` in `app/build.gradle.kt
 
 Configure these repository secrets before using the workflow:
 
-- `ANDROID_RELEASE_KEYSTORE_BASE64`: Base64-encoded contents of the release keystore.
-- `ANDROID_RELEASE_STORE_PASSWORD`: Keystore password.
-- `ANDROID_RELEASE_KEY_ALIAS`: Release key alias.
-- `ANDROID_RELEASE_KEY_PASSWORD`: Release key password.
+- `ANDROID_UPLOAD_KEYSTORE_BASE64`: Base64-encoded contents of `upload-keystore.jks`.
+- `ANDROID_UPLOAD_STORE_PASSWORD`: Upload keystore password.
+- `ANDROID_UPLOAD_KEY_ALIAS`: Upload key alias.
+- `ANDROID_UPLOAD_KEY_PASSWORD`: Upload key password.
 
-To create `ANDROID_RELEASE_KEYSTORE_BASE64` from PowerShell:
+To create `ANDROID_UPLOAD_KEYSTORE_BASE64` from PowerShell:
 
 ```powershell
-[Convert]::ToBase64String([IO.File]::ReadAllBytes("release-key.jks"))
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("upload-keystore.jks"))
+```
+
+From WSL/Linux:
+
+```bash
+base64 -w 0 upload-keystore.jks
 ```
 
 ## Install
