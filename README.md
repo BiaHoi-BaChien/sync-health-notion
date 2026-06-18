@@ -132,3 +132,7 @@ Enable USB debugging on the Pixel device, then install with Gradle:
 ```powershell
 .\gradlew.bat installDebug
 ```
+
+## License
+
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
