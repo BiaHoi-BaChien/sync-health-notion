@@ -62,17 +62,7 @@ Use either an internal connection token or a personal access token (PAT). Intern
 
 ## Build
 
-Install Android Studio and Android SDK, then build:
-
-```powershell
-.\gradlew.bat assembleDebug
-```
-
-The debug APK is generated at:
-
-```text
-app\build\outputs\apk\debug\app-debug.apk
-```
+This app is distributed for personal use as a signed release APK. It does not use an Android App Bundle in the normal release workflow.
 
 Release signing reads environment variables first:
 
@@ -81,7 +71,7 @@ Release signing reads environment variables first:
 - `ANDROID_RELEASE_KEY_ALIAS`
 - `ANDROID_RELEASE_KEY_PASSWORD`
 
-For local builds, copy `keystore.properties.example` to the gitignored `keystore.properties` and enter the local values:
+For local builds, copy `keystore.properties.example` to the gitignored `keystore.properties` and enter the existing release keystore values:
 
 ```properties
 storeFile=release-key.jks
@@ -90,27 +80,47 @@ keyAlias=...
 keyPassword=...
 ```
 
-Environment variables override matching values in `keystore.properties`. The signing configuration must contain all four values or none. `keystore.properties`, `*.jks`, `*.keystore`, `*.p12`, and `*.pfx` are local secret files and must not be committed.
+Environment variables override matching values in `keystore.properties`. The signing configuration must contain all four values or none. Continue using the same keystore and key alias so an installed app can be updated in place. `keystore.properties`, `*.jks`, `*.keystore`, `*.p12`, and `*.pfx` are local secret files and must not be committed.
 
-For Google Play, build the Android App Bundle:
+Build the signed release APK.
+
+WSL/Linux:
+
+```bash
+./gradlew assembleRelease
+```
+
+Windows PowerShell:
 
 ```powershell
-.\gradlew.bat bundleRelease
+.\gradlew.bat assembleRelease
 ```
 
-The release AAB is generated at:
+The release APK is generated at:
 
 ```text
-app\build\outputs\bundle\release\app-release.aab
+app/build/outputs/apk/release/sync-health-notion-v<versionName>-<versionCode>-release.apk
 ```
 
-Before uploading to Google Play, review `docs/google-play-submission.md` and publish a privacy policy based on `docs/privacy-policy-ja.md`.
+Verify the APK signature with the Android SDK `apksigner` command:
+
+WSL/Linux:
+
+```bash
+apksigner verify --print-certs app/build/outputs/apk/release/*.apk
+```
+
+Windows PowerShell:
+
+```powershell
+apksigner verify --print-certs (Get-ChildItem app\build\outputs\apk\release\*.apk).FullName
+```
 
 ## GitHub release automation
 
-When source is pushed or merged into `main` with a changed `appVersionName`, GitHub Actions builds a signed release AAB and creates a GitHub Release with the AAB attached. Changes that leave `appVersionName` unchanged skip the release build, release upload, and release notification path.
+When source is pushed or merged into `main` with an increased `appVersionCode`, GitHub Actions builds a signed release APK with `assembleRelease`, verifies its signature, and creates a GitHub Release with the APK attached. Changes that leave `appVersionCode` unchanged skip the release build. A decrease fails the workflow.
 
-Before merging a release change, update `appVersionName` in `app/build.gradle.kts`. Android `versionCode` is generated from that SemVer value as `MAJOR * 10000 + MINOR * 100 + PATCH`, so `0.0.3` builds with `versionCode 3` and future release APKs remain installable over older releases.
+Before every release, increment `appVersionCode` in `app/build.gradle.kts`. Update `appVersionName` when the user-visible version should change. Release tags and APK filenames include both values to remain unique and identifiable.
 
 Configure these repository secrets before using the workflow:
 
@@ -127,10 +137,18 @@ To create `ANDROID_RELEASE_KEYSTORE_BASE64` from PowerShell:
 
 ## Install
 
-Enable USB debugging on the Pixel device, then install with Gradle:
+Enable USB debugging on the Android device, then install or update the signed release APK. The existing app can only be updated when the APK uses the same application ID and signing key.
+
+WSL/Linux:
+
+```bash
+adb install -r app/build/outputs/apk/release/*.apk
+```
+
+Windows PowerShell:
 
 ```powershell
-.\gradlew.bat installDebug
+adb install -r (Get-ChildItem app\build\outputs\apk\release\*.apk).FullName
 ```
 
 ## License
