@@ -118,6 +118,8 @@ apksigner verify --print-certs (Get-ChildItem app\build\outputs\apk\release\*.ap
 
 ## GitHub release automation
 
+Every push to GitHub builds a debug APK. Download it from the workflow run's `Artifacts` section. The artifact name includes the commit SHA and is retained for 14 days. This APK is signed with Android's debug key and is intended for development verification only.
+
 When source is pushed or merged into `main` with an increased `appVersionCode`, GitHub Actions builds a signed release APK with `assembleRelease`, verifies its signature, and creates a GitHub Release with the APK attached. Changes that leave `appVersionCode` unchanged skip the release build. A decrease fails the workflow.
 
 Before every release, increment `appVersionCode` in `app/build.gradle.kts`. Update `appVersionName` when the user-visible version should change. Release tags and APK filenames include both values to remain unique and identifiable.
