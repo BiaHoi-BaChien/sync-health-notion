@@ -7,34 +7,20 @@ import org.junit.Test
 
 class StepMeasurementTest {
     @Test
-    fun reverseSyncSkipsExistingAndDuplicateMeasurementTimes() {
-        val existingTime = Instant.parse("2026-06-12T12:00:00Z")
-        val newTime = Instant.parse("2026-06-13T12:00:00Z")
-        val measurements = listOf(
-            DailyStepMeasurement(LocalDate.parse("2026-06-12"), existingTime, 1_000),
-            DailyStepMeasurement(LocalDate.parse("2026-06-13"), newTime, 2_000),
-            DailyStepMeasurement(LocalDate.parse("2026-06-13"), newTime, 3_000)
-        )
+    fun treatsStepDataAsEqualWhenMinuteAndCountMatch() {
+        val date = LocalDate.parse("2026-06-13")
+        val source = DailyStepMeasurement(date, Instant.parse("2026-06-13T12:00:03Z"), 2_000)
+        val target = DailyStepMeasurement(date, Instant.parse("2026-06-13T12:00:59Z"), 2_000)
 
-        val unsynced = selectUnsyncedStepMeasurements(measurements, setOf(existingTime))
-
-        assertEquals(1, unsynced.size)
-        assertEquals(newTime, unsynced.single().recordedAt)
-        assertEquals(2_000, unsynced.single().steps)
+        assertEquals(true, source.hasSameStepData(target))
     }
 
     @Test
-    fun reverseSyncKeepsDistinctMeasurementTimesForSameDay() {
+    fun treatsStepDataAsChangedWhenMinuteOrCountDiffers() {
         val date = LocalDate.parse("2026-06-13")
-        val firstTime = Instant.parse("2026-06-13T08:00:00Z")
-        val secondTime = Instant.parse("2026-06-13T20:00:00Z")
-        val measurements = listOf(
-            DailyStepMeasurement(date, firstTime, 1_000),
-            DailyStepMeasurement(date, secondTime, 2_000)
-        )
+        val source = DailyStepMeasurement(date, Instant.parse("2026-06-13T12:00:03Z"), 2_000)
 
-        val unsynced = selectUnsyncedStepMeasurements(measurements, emptySet())
-
-        assertEquals(measurements, unsynced)
+        assertEquals(false, source.hasSameStepData(source.copy(recordedAt = Instant.parse("2026-06-13T12:01:00Z"))))
+        assertEquals(false, source.hasSameStepData(source.copy(steps = 2_001)))
     }
 }

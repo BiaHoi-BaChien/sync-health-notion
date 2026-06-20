@@ -7,20 +7,27 @@ import org.junit.Test
 
 class WeightMeasurementTest {
     @Test
-    fun skipsNotionTimestampsAndDuplicateHealthConnectTimestamps() {
-        val existingTime = Instant.parse("2026-06-13T01:02:03Z")
-        val newTime = existingTime.plusSeconds(60)
-        val measurements = listOf(
-            WeightMeasurement(existingTime, 60.0),
-            WeightMeasurement(newTime, 61.25),
-            WeightMeasurement(newTime, 62.0)
-        )
+    fun treatsWeightDataAsEqualWhenMinuteAndValueMatch() {
+        val source = WeightMeasurement(Instant.parse("2026-06-13T01:02:03Z"), 61.25)
+        val target = WeightMeasurement(Instant.parse("2026-06-13T01:02:59Z"), 61.25)
 
-        val unsynced = selectUnsyncedWeightMeasurements(measurements, setOf(existingTime))
+        assertEquals(true, source.hasSameWeightData(target))
+    }
 
-        assertEquals(1, unsynced.size)
-        assertEquals(newTime, unsynced.single().measuredAt)
-        assertEquals(61.25, unsynced.single().kilograms, 0.0)
+    @Test
+    fun treatsWeightDataAsChangedWhenMinuteOrValueDiffers() {
+        val source = WeightMeasurement(Instant.parse("2026-06-13T01:02:03Z"), 61.25)
+
+        assertEquals(false, source.hasSameWeightData(source.copy(measuredAt = Instant.parse("2026-06-13T01:03:00Z"))))
+        assertEquals(false, source.hasSameWeightData(source.copy(kilograms = 61.3)))
+    }
+
+    @Test
+    fun keepsLatestWeightMeasurementWithinTheSameMinute() {
+        val first = WeightMeasurement(Instant.parse("2026-06-13T01:02:03Z"), 61.2)
+        val latest = WeightMeasurement(Instant.parse("2026-06-13T01:02:59Z"), 61.3)
+
+        assertEquals(listOf(latest), latestWeightMeasurementsByMinute(listOf(first, latest)))
     }
 
     @Test
@@ -31,10 +38,23 @@ class WeightMeasurementTest {
     }
 
     @Test
-    fun formatsAllConfiguredSyncCountsIncludingZero() {
+    fun formatsOnlyDestinationWritesForConfiguredSyncCounts() {
         val result = SyncResultCounts(steps = 0, vitals = 2, weight = 0)
 
-        assertEquals("歩数0件、バイタル2件、体重0件を同期しました。", result.toDisplayMessage())
+        assertEquals("バイタル2件を同期しました。", result.toDisplayMessage())
+    }
+
+    @Test
+    fun reportsAlreadyCurrentWhenAllConfiguredSyncCountsAreZero() {
+        val result = SyncResultCounts(steps = 0, vitals = 0, weight = 0)
+
+        assertEquals("すでに最新です。", result.toDisplayMessage())
+    }
+
+    @Test
+    fun formatsIndividualDestinationWriteCount() {
+        assertEquals("歩数データを2件同期しました。", syncCountMessage("歩数データ", 2))
+        assertEquals("すでに最新です。", syncCountMessage("歩数データ", 0))
     }
 
     @Test
