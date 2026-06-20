@@ -82,6 +82,7 @@ import java.time.LocalTime
 import java.time.Period
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.coroutineContext
@@ -1508,7 +1509,7 @@ class MainActivity : ComponentActivity() {
             permissionTarget = "歩数"
         ) { client ->
             val synced = HealthNotionSyncEngine.syncSteps(client, config, lookbackDays)
-            "歩数データを${synced}件同期しました。"
+            syncCountMessage("歩数データ", synced)
         }
     }
 
@@ -1592,7 +1593,7 @@ class MainActivity : ComponentActivity() {
             permissionTarget = "バイタル"
         ) { client ->
             val synced = HealthNotionSyncEngine.syncVitals(client, config, lookbackDays)
-            "血圧・心拍データを${synced}件同期しました。"
+            syncCountMessage("血圧・心拍データ", synced)
         }
     }
 
@@ -1614,7 +1615,7 @@ class MainActivity : ComponentActivity() {
             permissionTarget = "体重"
         ) { client ->
             val synced = HealthNotionSyncEngine.syncWeight(client, config, lookbackDays)
-            "体重データを${synced}件同期しました。"
+            syncCountMessage("体重データ", synced)
         }
     }
 
@@ -2768,13 +2769,21 @@ class MainActivity : ComponentActivity() {
     ): StepDebugSyncResult {
         val steps = debugMeasurement.measurement
         val existingPage = existingPages[steps.date]
+        val existingMeasurement = existingPage?.toMeasurement(steps.date)
         val operation = if (existingPage == null) {
             notion.createStepPage(steps)
-            existingPages[steps.date] = NotionStepPage(id = "", recordedAt = steps.recordedAt)
+            existingPages[steps.date] = NotionStepPage(
+                id = "",
+                recordedAt = steps.recordedAt,
+                steps = steps.steps
+            )
             StepDebugOperation.CREATED
-        } else if (existingPage.recordedAt != steps.recordedAt) {
+        } else if (existingMeasurement == null || !steps.hasSameStepData(existingMeasurement)) {
             notion.updateStepPage(existingPage.id, steps)
-            existingPages[steps.date] = existingPage.copy(recordedAt = steps.recordedAt)
+            existingPages[steps.date] = existingPage.copy(
+                recordedAt = steps.recordedAt,
+                steps = steps.steps
+            )
             StepDebugOperation.UPDATED
         } else {
             StepDebugOperation.SKIPPED
@@ -3348,12 +3357,22 @@ private object HealthNotionSyncEngine {
             val existingPage = existingPages[steps.date]
             if (existingPage == null) {
                 notion.createStepPage(steps)
-                existingPages[steps.date] = NotionStepPage(id = "", recordedAt = steps.recordedAt)
+                existingPages[steps.date] = NotionStepPage(
+                    id = "",
+                    recordedAt = steps.recordedAt,
+                    steps = steps.steps
+                )
                 synced++
-            } else if (existingPage.recordedAt != steps.recordedAt) {
-                notion.updateStepPage(existingPage.id, steps)
-                existingPages[steps.date] = existingPage.copy(recordedAt = steps.recordedAt)
-                synced++
+            } else {
+                val existingMeasurement = existingPage.toMeasurement(steps.date)
+                if (existingMeasurement == null || !steps.hasSameStepData(existingMeasurement)) {
+                    notion.updateStepPage(existingPage.id, steps)
+                    existingPages[steps.date] = existingPage.copy(
+                        recordedAt = steps.recordedAt,
+                        steps = steps.steps
+                    )
+                    synced++
+                }
             }
         }
         return synced
@@ -3364,16 +3383,21 @@ private object HealthNotionSyncEngine {
             return syncVitalsToHealthConnect(client, config, lookbackDays)
         }
         val notion = NotionClient(config)
-        val existingTimes = notion.readVitalMeasurementTimes(lookbackDays)
-        val measurements = selectUnsyncedVitalMeasurements(
-            readVitalMeasurements(client, lookbackDays),
-            existingTimes
-        )
+        val existingPages = notion.readVitalPagesByMinute(lookbackDays).toMutableMap()
+        val measurements = latestVitalMeasurementsByMinute(readVitalMeasurements(client, lookbackDays))
         var synced = 0
         for (measurement in measurements) {
             coroutineContext.ensureActive()
-            notion.createVitalPage(measurement)
-            synced++
+            val minute = measurement.measuredAt.toMinuteKey()
+            val existingPage = existingPages[minute]
+            if (existingPage == null) {
+                notion.createVitalPage(measurement)
+                synced++
+            } else if (!measurement.hasSameVitalValues(existingPage.measurement)) {
+                notion.updateVitalPage(existingPage.id, measurement)
+                synced++
+            }
+            existingPages[minute] = NotionVitalPage(existingPage?.id.orEmpty(), measurement)
         }
         return synced
     }
@@ -3383,16 +3407,21 @@ private object HealthNotionSyncEngine {
             return syncWeightToHealthConnect(client, config, lookbackDays)
         }
         val notion = NotionClient(config)
-        val existingTimes = notion.readWeightMeasurementTimes(lookbackDays)
-        val measurements = selectUnsyncedWeightMeasurements(
-            readWeightMeasurements(client, lookbackDays),
-            existingTimes
-        )
+        val existingPages = notion.readWeightPagesByMinute(lookbackDays).toMutableMap()
+        val measurements = latestWeightMeasurementsByMinute(readWeightMeasurements(client, lookbackDays))
         var synced = 0
         for (measurement in measurements) {
             coroutineContext.ensureActive()
-            notion.createWeightPage(measurement)
-            synced++
+            val minute = measurement.measuredAt.toMinuteKey()
+            val existingPage = existingPages[minute]
+            if (existingPage == null) {
+                notion.createWeightPage(measurement)
+                synced++
+            } else if (!measurement.hasSameWeightData(existingPage.measurement)) {
+                notion.updateWeightPage(existingPage.id, measurement)
+                synced++
+            }
+            existingPages[minute] = NotionWeightPage(existingPage?.id.orEmpty(), measurement)
         }
         return synced
     }
@@ -3402,21 +3431,28 @@ private object HealthNotionSyncEngine {
         config: SyncConfig,
         lookbackDays: Long
     ): Int {
-        val existingTimes = client.readRecords(
+        val existingRecords = client.readRecords(
             ReadRecordsRequest(
                 recordType = StepsRecord::class,
                 timeRangeFilter = recentTimeRange(lookbackDays),
                 ascendingOrder = true,
                 pageSize = 5000
             )
-        ).records.mapTo(mutableSetOf()) { it.endTime }
-        val records = selectUnsyncedStepMeasurements(
-            NotionClient(config).readStepMeasurements(lookbackDays),
-            existingTimes
-        )
-            .map { it.toHealthConnectRecord() }
-        if (records.isNotEmpty()) client.insertRecords(records)
-        return records.size
+        ).records.associateLatestByMinute { it.endTime }
+        var synced = 0
+        for (measurement in NotionClient(config).readStepMeasurements(lookbackDays)) {
+            val existingRecord = existingRecords[measurement.recordedAt.toMinuteKey()]
+            val existingMeasurement = existingRecord?.let {
+                DailyStepMeasurement(measurement.date, it.endTime, it.count)
+            }
+            if (existingMeasurement != null && measurement.hasSameStepData(existingMeasurement)) {
+                continue
+            }
+            val record = measurement.toHealthConnectRecord(existingRecord?.metadata?.id)
+            if (existingRecord == null) client.insertRecords(listOf(record)) else client.updateRecords(listOf(record))
+            synced++
+        }
+        return synced
     }
 
     private suspend fun syncVitalsToHealthConnect(
@@ -3424,20 +3460,60 @@ private object HealthNotionSyncEngine {
         config: SyncConfig,
         lookbackDays: Long
     ): Int {
-        val existingTimes = client.readRecords(
+        val existingBloodPressures = client.readRecords(
             ReadRecordsRequest(
                 recordType = BloodPressureRecord::class,
                 timeRangeFilter = recentTimeRange(lookbackDays),
                 ascendingOrder = true,
                 pageSize = 5000
             )
-        ).records.mapTo(mutableSetOf()) { it.time }
-        val measurements = NotionClient(config).readVitalMeasurements(lookbackDays)
-            .filter { existingTimes.add(it.measuredAt) }
+        ).records.associateLatestByMinute { it.time }
+        val existingHeartRates = client.readRecords(
+            ReadRecordsRequest(
+                recordType = HeartRateRecord::class,
+                timeRangeFilter = recentTimeRange(lookbackDays),
+                ascendingOrder = true,
+                pageSize = 5000
+            )
+        ).records.associateLatestByMinute { it.startTime }
+        val measurements = latestVitalMeasurementsByMinute(
+            NotionClient(config).readVitalMeasurements(lookbackDays)
+        )
+        var synced = 0
         for (measurement in measurements) {
-            client.insertRecords(measurement.toHealthConnectRecords(includeHeartRateWhenMissing = false))
+            val minute = measurement.measuredAt.toMinuteKey()
+            val bloodPressure = existingBloodPressures[minute]
+            val heartRate = existingHeartRates[minute]
+            val existingMeasurement = bloodPressure?.let {
+                VitalMeasurement(
+                    measuredAt = it.time,
+                    systolic = it.systolic.inMillimetersOfMercury,
+                    diastolic = it.diastolic.inMillimetersOfMercury,
+                    heartRate = heartRate?.samples
+                        ?.filter { sample -> sample.time.toMinuteKey() == minute }
+                        ?.maxByOrNull { sample -> sample.time }
+                        ?.beatsPerMinute
+                )
+            }
+            if (existingMeasurement != null && measurement.hasSameVitalValues(existingMeasurement)) {
+                continue
+            }
+            val records = measurement.toHealthConnectRecords(
+                includeHeartRateWhenMissing = false,
+                bloodPressureMetadataId = bloodPressure?.metadata?.id,
+                heartRateMetadataId = heartRate?.metadata?.id
+            )
+            if (bloodPressure == null) {
+                client.insertRecords(records)
+            } else {
+                client.updateRecords(records.filter { it is BloodPressureRecord || heartRate != null })
+                records.filterIsInstance<HeartRateRecord>()
+                    .takeIf { heartRate == null && it.isNotEmpty() }
+                    ?.let { client.insertRecords(it) }
+            }
+            synced++
         }
-        return measurements.size
+        return synced
     }
 
     private suspend fun syncWeightToHealthConnect(
@@ -3445,19 +3521,28 @@ private object HealthNotionSyncEngine {
         config: SyncConfig,
         lookbackDays: Long
     ): Int {
-        val existingTimes = client.readRecords(
+        val existingRecords = client.readRecords(
             ReadRecordsRequest(
                 recordType = WeightRecord::class,
                 timeRangeFilter = recentTimeRange(lookbackDays),
                 ascendingOrder = true,
                 pageSize = 5000
             )
-        ).records.mapTo(mutableSetOf()) { it.time }
-        val records = NotionClient(config).readWeightMeasurements(lookbackDays)
-            .filter { existingTimes.add(it.measuredAt) }
-            .map { it.toHealthConnectRecord() }
-        if (records.isNotEmpty()) client.insertRecords(records)
-        return records.size
+        ).records.associateLatestByMinute { it.time }
+        var synced = 0
+        for (measurement in latestWeightMeasurementsByMinute(NotionClient(config).readWeightMeasurements(lookbackDays))) {
+            val existingRecord = existingRecords[measurement.measuredAt.toMinuteKey()]
+            val existingMeasurement = existingRecord?.let {
+                WeightMeasurement(it.time, it.weight.inKilograms)
+            }
+            if (existingMeasurement != null && measurement.hasSameWeightData(existingMeasurement)) {
+                continue
+            }
+            val record = measurement.toHealthConnectRecord(existingRecord?.metadata?.id)
+            if (existingRecord == null) client.insertRecords(listOf(record)) else client.updateRecords(listOf(record))
+            synced++
+        }
+        return synced
     }
 
     private fun recentTimeRange(lookbackDays: Long): TimeRangeFilter {
@@ -3583,16 +3668,26 @@ private object HealthNotionSyncEngine {
     }
 }
 
+internal fun syncCountMessage(subject: String, count: Int): String =
+    if (count == 0) "すでに最新です。" else "${subject}を${count}件同期しました。"
+
 internal data class SyncResultCounts(
     val steps: Int?,
     val vitals: Int?,
     val weight: Int?
 ) {
-    fun toDisplayMessage(): String = buildList {
-        steps?.let { add("歩数${it}件") }
-        vitals?.let { add("バイタル${it}件") }
-        weight?.let { add("体重${it}件") }
-    }.joinToString("、", postfix = "を同期しました。")
+    fun toDisplayMessage(): String {
+        val syncedItems = buildList {
+            steps?.takeIf { it > 0 }?.let { add("歩数${it}件") }
+            vitals?.takeIf { it > 0 }?.let { add("バイタル${it}件") }
+            weight?.takeIf { it > 0 }?.let { add("体重${it}件") }
+        }
+        return if (syncedItems.isEmpty()) {
+            "すでに最新です。"
+        } else {
+            syncedItems.joinToString("、", postfix = "を同期しました。")
+        }
+    }
 }
 
 internal data class DailyStepMeasurement(
@@ -3633,6 +3728,21 @@ private data class NotionStepPage(
     val id: String,
     val recordedAt: Instant?,
     val steps: Long? = null
+)
+
+private data class NotionVitalPage(
+    val id: String,
+    val measurement: VitalMeasurement
+)
+
+private data class NotionWeightPage(
+    val id: String,
+    val measurement: WeightMeasurement
+)
+
+private data class NotionMeasurementPage(
+    val id: String,
+    val properties: JSONObject
 )
 
 internal data class NotionDateValue(
@@ -3682,21 +3792,44 @@ internal fun pairVitalMeasurements(
         )
     }
 
-internal fun selectUnsyncedVitalMeasurements(
-    measurements: List<VitalMeasurement>,
-    existingTimes: Set<Instant>
-): List<VitalMeasurement> {
-    val knownTimes = existingTimes.toMutableSet()
-    return measurements.filter { knownTimes.add(it.measuredAt) }
+private fun NotionStepPage.toMeasurement(date: LocalDate): DailyStepMeasurement? {
+    val recordedAt = recordedAt ?: return null
+    val steps = steps ?: return null
+    return DailyStepMeasurement(date, recordedAt, steps)
 }
 
-internal fun selectUnsyncedWeightMeasurements(
-    measurements: List<WeightMeasurement>,
-    existingTimes: Set<Instant>
-): List<WeightMeasurement> {
-    val knownTimes = existingTimes.toMutableSet()
-    return measurements.filter { knownTimes.add(it.measuredAt) }
-}
+internal fun DailyStepMeasurement.hasSameStepData(other: DailyStepMeasurement): Boolean =
+    recordedAt.toMinuteKey() == other.recordedAt.toMinuteKey() && steps == other.steps
+
+internal fun WeightMeasurement.hasSameWeightData(other: WeightMeasurement): Boolean =
+    measuredAt.toMinuteKey() == other.measuredAt.toMinuteKey() && kilograms == other.kilograms
+
+internal fun VitalMeasurement.hasSameVitalValues(other: VitalMeasurement): Boolean =
+    systolic == other.systolic &&
+        diastolic == other.diastolic &&
+        heartRate == other.heartRate
+
+internal fun latestVitalMeasurementsByMinute(
+    measurements: List<VitalMeasurement>
+): List<VitalMeasurement> =
+    measurements
+        .associateLatestByMinute { it.measuredAt }
+        .values
+        .sortedBy { it.measuredAt }
+
+internal fun Instant.toMinuteKey(): Instant = truncatedTo(ChronoUnit.MINUTES)
+
+private fun <T> Iterable<T>.associateLatestByMinute(timestamp: (T) -> Instant): Map<Instant, T> =
+    groupBy { timestamp(it).toMinuteKey() }
+        .mapValues { (_, values) -> values.maxBy(timestamp) }
+
+internal fun latestWeightMeasurementsByMinute(
+    measurements: List<WeightMeasurement>
+): List<WeightMeasurement> =
+    measurements
+        .associateLatestByMinute { it.measuredAt }
+        .values
+        .sortedBy { it.measuredAt }
 
 internal fun parseManualWeight(text: String): Double {
     val normalized = text.trim()
@@ -3711,23 +3844,19 @@ internal fun parseManualWeight(text: String): Double {
 internal fun formatManualWeight(value: Double): String =
     String.format(Locale.JAPAN, "%.1f", value)
 
-internal fun selectUnsyncedStepMeasurements(
-    measurements: List<DailyStepMeasurement>,
-    existingTimes: Set<Instant>
-): List<DailyStepMeasurement> {
-    val knownTimes = existingTimes.toMutableSet()
-    return measurements.filter { knownTimes.add(it.recordedAt) }
-}
-
 private fun VitalMeasurement.toHealthConnectRecords(
-    includeHeartRateWhenMissing: Boolean = true
+    includeHeartRateWhenMissing: Boolean = true,
+    bloodPressureMetadataId: String? = null,
+    heartRateMetadataId: String? = null
 ): List<androidx.health.connect.client.records.Record> {
     val zoneOffset = measuredAt.atZone(ZoneId.systemDefault()).offset
     val records = mutableListOf<androidx.health.connect.client.records.Record>(
         BloodPressureRecord(
             time = measuredAt,
             zoneOffset = zoneOffset,
-            metadata = Metadata.manualEntry("manual-bp-${measuredAt.toEpochMilli()}"),
+            metadata = bloodPressureMetadataId
+                ?.let(Metadata::manualEntryWithId)
+                ?: Metadata.manualEntry("manual-bp-${measuredAt.toEpochMilli()}"),
             systolic = Pressure.millimetersOfMercury(systolic),
             diastolic = Pressure.millimetersOfMercury(diastolic)
         )
@@ -3739,13 +3868,15 @@ private fun VitalMeasurement.toHealthConnectRecords(
             endTime = measuredAt.plusSeconds(1),
             endZoneOffset = zoneOffset,
             samples = listOf(HeartRateRecord.Sample(measuredAt, checkNotNull(heartRate))),
-            metadata = Metadata.manualEntry("manual-hr-${measuredAt.toEpochMilli()}")
+            metadata = heartRateMetadataId
+                ?.let(Metadata::manualEntryWithId)
+                ?: Metadata.manualEntry("manual-hr-${measuredAt.toEpochMilli()}")
         ))
     }
     return records
 }
 
-private fun DailyStepMeasurement.toHealthConnectRecord(): StepsRecord {
+private fun DailyStepMeasurement.toHealthConnectRecord(metadataId: String? = null): StepsRecord {
     val zone = ZoneId.systemDefault()
     val dayStart = date.atStartOfDay(zone).toInstant()
     val end = if (recordedAt.isAfter(dayStart)) recordedAt else dayStart.plusSeconds(1)
@@ -3755,18 +3886,23 @@ private fun DailyStepMeasurement.toHealthConnectRecord(): StepsRecord {
         endTime = end,
         endZoneOffset = end.atZone(zone).offset,
         count = steps,
-        metadata = Metadata.manualEntry("notion-steps-${recordedAt.toEpochMilli()}")
+        metadata = metadataId
+            ?.let(Metadata::manualEntryWithId)
+            ?: Metadata.manualEntry("notion-steps-${recordedAt.toEpochMilli()}")
     )
 }
 
 private fun WeightMeasurement.toHealthConnectRecord(
+    metadataId: String? = null,
     metadataIdPrefix: String = "notion-weight"
 ): WeightRecord =
     WeightRecord(
         time = measuredAt,
         zoneOffset = measuredAt.atZone(ZoneId.systemDefault()).offset,
         weight = Mass.kilograms(kilograms),
-        metadata = Metadata.manualEntry("$metadataIdPrefix-${measuredAt.toEpochMilli()}")
+        metadata = metadataId
+            ?.let(Metadata::manualEntryWithId)
+            ?: Metadata.manualEntry("$metadataIdPrefix-${measuredAt.toEpochMilli()}")
     )
 
 private class NotionClient(private val config: SyncConfig) {
@@ -3828,6 +3964,11 @@ private class NotionClient(private val config: SyncConfig) {
         request("POST", "https://api.notion.com/v1/pages", body)
     }
 
+    fun updateVitalPage(pageId: String, measurement: VitalMeasurement) {
+        val body = JSONObject().put("properties", vitalProperties(measurement))
+        request("PATCH", "https://api.notion.com/v1/pages/$pageId", body)
+    }
+
     private fun vitalProperties(measurement: VitalMeasurement): JSONObject {
         return JSONObject()
             .put(
@@ -3842,33 +3983,44 @@ private class NotionClient(private val config: SyncConfig) {
             )
     }
 
-    fun readVitalMeasurementTimes(lookbackDays: Long): Set<Instant> {
-        return readMeasurementTimes(
+    fun readVitalPagesByMinute(lookbackDays: Long): Map<Instant, NotionVitalPage> {
+        return readMeasurementPages(
             dataSourceId = config.vitalsDataSourceId,
             dateProperty = config.vitalsMeasuredAtProperty,
             lookbackDays = lookbackDays
-        )
+        ).mapNotNull { page ->
+            page.toVitalMeasurement()?.let { NotionVitalPage(page.id, it) }
+        }.associateLatestByMinute { it.measurement.measuredAt }
     }
 
     fun createWeightPage(measurement: WeightMeasurement) {
-        val properties = JSONObject()
+        val body = JSONObject()
+            .put("parent", dataSourceParent(validDataSourceId(config.weightDataSourceId)))
+            .put("properties", weightProperties(measurement))
+        request("POST", "https://api.notion.com/v1/pages", body)
+    }
+
+    fun updateWeightPage(pageId: String, measurement: WeightMeasurement) {
+        val body = JSONObject().put("properties", weightProperties(measurement))
+        request("PATCH", "https://api.notion.com/v1/pages/$pageId", body)
+    }
+
+    private fun weightProperties(measurement: WeightMeasurement): JSONObject =
+        JSONObject()
             .put(
                 config.weightMeasuredAtProperty,
                 JSONObject().put("date", JSONObject().put("start", measurement.measuredAt.toNotionDateTime()))
             )
             .put(config.weightProperty, JSONObject().put("number", measurement.kilograms))
-        val body = JSONObject()
-            .put("parent", dataSourceParent(validDataSourceId(config.weightDataSourceId)))
-            .put("properties", properties)
-        request("POST", "https://api.notion.com/v1/pages", body)
-    }
 
-    fun readWeightMeasurementTimes(lookbackDays: Long): Set<Instant> {
-        return readMeasurementTimes(
+    fun readWeightPagesByMinute(lookbackDays: Long): Map<Instant, NotionWeightPage> {
+        return readMeasurementPages(
             dataSourceId = config.weightDataSourceId,
             dateProperty = config.weightMeasuredAtProperty,
             lookbackDays = lookbackDays
-        )
+        ).mapNotNull { page ->
+            page.toWeightMeasurement()?.let { NotionWeightPage(page.id, it) }
+        }.associateLatestByMinute { it.measurement.measuredAt }
     }
 
     fun readVitalMeasurements(lookbackDays: Long): List<VitalMeasurement> {
@@ -3876,17 +4028,7 @@ private class NotionClient(private val config: SyncConfig) {
             dataSourceId = config.vitalsDataSourceId,
             dateProperty = config.vitalsMeasuredAtProperty,
             lookbackDays = lookbackDays
-        ).mapNotNull { properties ->
-            val measuredAt = properties.notionInstant(config.vitalsMeasuredAtProperty) ?: return@mapNotNull null
-            val systolic = properties.notionNumber(config.systolicProperty) ?: return@mapNotNull null
-            val diastolic = properties.notionNumber(config.diastolicProperty) ?: return@mapNotNull null
-            VitalMeasurement(
-                measuredAt = measuredAt,
-                systolic = systolic,
-                diastolic = diastolic,
-                heartRate = properties.notionNumber(config.heartRateProperty)?.toLong()
-            )
-        }
+        ).mapNotNull { it.toVitalMeasurement() }
     }
 
     fun readWeightMeasurements(lookbackDays: Long): List<WeightMeasurement> {
@@ -3894,23 +4036,19 @@ private class NotionClient(private val config: SyncConfig) {
             dataSourceId = config.weightDataSourceId,
             dateProperty = config.weightMeasuredAtProperty,
             lookbackDays = lookbackDays
-        ).mapNotNull { properties ->
-            val measuredAt = properties.notionInstant(config.weightMeasuredAtProperty) ?: return@mapNotNull null
-            val kilograms = properties.notionNumber(config.weightProperty) ?: return@mapNotNull null
-            WeightMeasurement(measuredAt, kilograms)
-        }
+        ).mapNotNull { it.toWeightMeasurement() }
     }
 
     private fun readMeasurementPages(
         dataSourceId: String,
         dateProperty: String,
         lookbackDays: Long
-    ): List<JSONObject> {
+    ): List<NotionMeasurementPage> {
         val zone = ZoneId.systemDefault()
         val today = LocalDate.now(zone)
         val start = today.minusDays(lookbackDays).atStartOfDay(zone).toInstant().toNotionDateTime()
         val end = today.plusDays(1).atStartOfDay(zone).toInstant().toNotionDateTime()
-        val pages = mutableListOf<JSONObject>()
+        val pages = mutableListOf<NotionMeasurementPage>()
         var cursor: String? = null
         do {
             val body = JSONObject()
@@ -3933,13 +4071,33 @@ private class NotionClient(private val config: SyncConfig) {
             ensureCompleteQuery(response)
             val results = response.optJSONArray("results") ?: JSONArray()
             for (index in 0 until results.length()) {
-                results.optJSONObject(index)?.optJSONObject("properties")?.let(pages::add)
+                val page = results.optJSONObject(index) ?: continue
+                val properties = page.optJSONObject("properties") ?: continue
+                pages.add(NotionMeasurementPage(page.optString("id"), properties))
             }
             cursor = response.optString("next_cursor").takeIf {
                 response.optBoolean("has_more") && it.isNotBlank()
             }
         } while (cursor != null)
         return pages
+    }
+
+    private fun NotionMeasurementPage.toWeightMeasurement(): WeightMeasurement? {
+        val measuredAt = properties.notionInstant(config.weightMeasuredAtProperty) ?: return null
+        val kilograms = properties.notionNumber(config.weightProperty) ?: return null
+        return WeightMeasurement(measuredAt, kilograms)
+    }
+
+    private fun NotionMeasurementPage.toVitalMeasurement(): VitalMeasurement? {
+        val measuredAt = properties.notionInstant(config.vitalsMeasuredAtProperty) ?: return null
+        val systolic = properties.notionNumber(config.systolicProperty) ?: return null
+        val diastolic = properties.notionNumber(config.diastolicProperty) ?: return null
+        return VitalMeasurement(
+            measuredAt = measuredAt,
+            systolic = systolic,
+            diastolic = diastolic,
+            heartRate = properties.notionNumber(config.heartRateProperty)?.toLong()
+        )
     }
 
     private fun readMeasurementTimes(

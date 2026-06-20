@@ -11,18 +11,19 @@ Each data type can be configured independently as `同期しない`, `HealthConn
 - Reads Health Connect step records, aggregates them by day, and writes one daily total row to Notion.
 - Saves manually entered blood pressure and heart rate values to Health Connect at the same measurement time.
 - Saves manually entered weight values, including voice input rounded to one decimal place, to Health Connect.
-- Reads Health Connect blood pressure records, pairs heart rate samples recorded at the same time, and writes measurements not already present to Notion.
+- Reads Health Connect blood pressure records, pairs heart rate samples recorded at the same time, and creates or updates Notion measurements using the timestamp through the minute as the key.
 - Reads Health Connect weight records from all data origins and writes the latest 30 days to Notion in kilograms.
 - Keeps Notion step rows to one row per day, using the day's latest Health Connect step record time as the Notion date time.
 - Includes today's step, vital, and weight data in sync.
 - Shows the latest Health Connect-side and Notion-side timestamps for step, vital, and weight data on the top page.
+- Reports only records actually created or updated at the sync destination, and shows that data is already current when no writes are needed.
 - Sends configured data to Notion from individual sync buttons, `すべて同期`, or automatic sync.
 - Sends configured Notion records to Health Connect when the reverse direction is selected, without deleting existing records.
 - Stores the Notion API token locally using Android Keystore-backed encryption.
 - Stores data source IDs and property names locally on the device.
 - Uses the latest 30 days as the sync window for Health Connect step, vital, and weight data.
 - Uses blood pressure as the base vital measurement. Heart-rate-only records are not sent to Notion.
-- Uses the exact measurement timestamp as the Notion vital deduplication key.
+- Uses the measurement timestamp through the minute as the vital upsert key in both sync directions. Records are skipped when systolic blood pressure, diastolic blood pressure, and heart rate are also unchanged.
 
 ## Notion data source requirements
 
@@ -31,7 +32,7 @@ The step data source must have:
 - A date property with time enabled, default name: `日付`
 - A number property, default name: `歩数`
 
-Step sync uses the daily latest Health Connect step record time in the date property. When that time differs from the Notion row for the same day, the app updates the row with the latest daily total.
+Step sync keeps one Notion row per day and uses the daily latest Health Connect step record time in the date property. It skips writes when that timestamp matches through the minute and the daily step total is unchanged.
 
 The blood pressure data source must have:
 
@@ -47,7 +48,7 @@ The weight data source must have:
 - A date property with time enabled, default name: `日付`
 - A number property in kilograms, default name: `体重`
 
-Weight sync uses the exact Health Connect measurement timestamp as the deduplication key. It does not delete or update existing Health Connect or Notion records.
+Weight sync uses the measurement timestamp through the minute as the upsert key in both directions. It skips writes when the weight value is also unchanged.
 
 Use either an internal connection token or a personal access token (PAT). Internal connections must be shared with the parent databases. PATs use the permissions of the Notion user who created them. Use data source IDs, not database IDs.
 

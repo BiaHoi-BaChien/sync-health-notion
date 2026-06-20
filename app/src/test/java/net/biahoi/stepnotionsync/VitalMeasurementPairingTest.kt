@@ -48,19 +48,50 @@ class VitalMeasurementPairingTest {
     }
 
     @Test
-    fun skipsNotionTimestampsAndDuplicateHealthConnectTimestamps() {
-        val existingTime = Instant.parse("2026-06-13T01:02:03Z")
-        val newTime = existingTime.plusSeconds(60)
-        val measurements = listOf(
-            VitalMeasurement(existingTime, 120.0, 80.0, 70L),
-            VitalMeasurement(newTime, 121.0, 81.0, 71L),
-            VitalMeasurement(newTime, 122.0, 82.0, 72L)
+    fun treatsTimestampsInTheSameMinuteAsTheSameVitalRecord() {
+        val first = Instant.parse("2026-06-13T01:02:03Z")
+        val latest = Instant.parse("2026-06-13T01:02:59Z")
+        val measurements = latestVitalMeasurementsByMinute(
+            listOf(
+                VitalMeasurement(first, 120.0, 80.0, 70L),
+                VitalMeasurement(latest, 121.0, 81.0, 71L)
+            )
         )
 
-        val unsynced = selectUnsyncedVitalMeasurements(measurements, setOf(existingTime))
+        assertEquals(1, measurements.size)
+        assertEquals(latest, measurements.single().measuredAt)
+        assertEquals(121.0, measurements.single().systolic, 0.0)
+    }
 
-        assertEquals(1, unsynced.size)
-        assertEquals(newTime, unsynced.single().measuredAt)
-        assertEquals(121.0, unsynced.single().systolic, 0.0)
+    @Test
+    fun keepsVitalRecordsFromDifferentMinutes() {
+        val first = Instant.parse("2026-06-13T01:02:59Z")
+        val nextMinute = Instant.parse("2026-06-13T01:03:00Z")
+        val measurements = latestVitalMeasurementsByMinute(
+            listOf(
+                VitalMeasurement(first, 120.0, 80.0, 70L),
+                VitalMeasurement(nextMinute, 121.0, 81.0, 71L)
+            )
+        )
+
+        assertEquals(listOf(first, nextMinute), measurements.map { it.measuredAt })
+    }
+
+    @Test
+    fun considersVitalValuesEqualWhenOnlySecondsDiffer() {
+        val source = VitalMeasurement(Instant.parse("2026-06-13T01:02:03Z"), 120.0, 80.0, 70L)
+        val target = VitalMeasurement(Instant.parse("2026-06-13T01:02:59Z"), 120.0, 80.0, 70L)
+
+        assertEquals(true, source.hasSameVitalValues(target))
+    }
+
+    @Test
+    fun considersVitalValuesChangedWhenAnySyncedValueDiffers() {
+        val source = VitalMeasurement(Instant.parse("2026-06-13T01:02:03Z"), 120.0, 80.0, 70L)
+
+        assertEquals(false, source.hasSameVitalValues(source.copy(systolic = 121.0)))
+        assertEquals(false, source.hasSameVitalValues(source.copy(diastolic = 81.0)))
+        assertEquals(false, source.hasSameVitalValues(source.copy(heartRate = 71L)))
+        assertEquals(false, source.hasSameVitalValues(source.copy(heartRate = null)))
     }
 }
