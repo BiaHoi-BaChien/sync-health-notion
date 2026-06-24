@@ -3155,6 +3155,8 @@ private fun recordAutoSyncSuccess(context: Context, result: SyncResultCounts) {
         .putString(AUTO_SYNC_RESULT_KEY, "成功")
         .putString(AUTO_SYNC_RESULT_DETAILS_KEY, result.toDisplayMessage())
         .putLong(AUTO_SYNC_LAST_SUCCESS_AT_KEY, System.currentTimeMillis())
+        .remove(AUTO_SYNC_LAST_FAILURE_AT_KEY)
+        .remove(AUTO_SYNC_FAILURE_REASON_KEY)
         .apply()
 }
 
