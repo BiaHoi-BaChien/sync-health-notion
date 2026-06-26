@@ -16,7 +16,7 @@ Each data type can be configured independently as `同期しない`, `HealthConn
 - Keeps Notion step rows to one row per day, using the day's latest Health Connect step record time as the Notion date time.
 - Includes today's step, vital, and weight data in sync.
 - Shows the latest Health Connect-side and Notion-side timestamps for step, vital, and weight data on the top page.
-- Reports only records actually created or updated at the sync destination, and shows that data is already current when no writes are needed.
+- Reports only records actually created or updated at the sync destination, and shows `すでに最新です。` when no writes are needed.
 - Sends configured data to Notion from individual sync buttons, `すべて同期`, or automatic sync.
 - Sends configured Notion records to Health Connect when the reverse direction is selected, without deleting existing records.
 - Stores the Notion API token locally using Android Keystore-backed encryption.
@@ -145,6 +145,10 @@ base64 -w 0 upload-keystore.jks
 ```
 
 ## Install
+
+Download the signed release APK from GitHub Releases, or build it locally with `assembleRelease`.
+
+The current release is `v0.2.1-112`, published as `sync-health-notion-v0.2.1-112-release.apk`.
 
 Enable USB debugging on the Android device, then install or update the signed release APK. The existing app can only be updated when the APK uses the same application ID and signing key.
 
