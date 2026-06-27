@@ -2,7 +2,9 @@ package net.biahoi.stepnotionsync
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.net.UnknownHostException
 
 class NotionCompatibilityTest {
     @Test
@@ -38,5 +40,10 @@ class NotionCompatibilityTest {
             incompleteQueryError("incomplete", "")
         )
         assertNull(incompleteQueryError("complete", null))
+    }
+
+    @Test
+    fun autoSyncRetriesNameResolutionErrorsWithoutRecordingFailure() {
+        assertTrue(isRetryableAutoSyncError(UnknownHostException("api.notion.com")))
     }
 }

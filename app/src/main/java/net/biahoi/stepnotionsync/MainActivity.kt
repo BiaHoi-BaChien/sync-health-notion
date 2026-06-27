@@ -3202,6 +3202,10 @@ private fun workerErrorMessage(error: Exception): String {
     }
 }
 
+internal fun isRetryableAutoSyncError(error: Exception): Boolean {
+    return (error as? NotionRequestException)?.isRetryable != false
+}
+
 private fun loadSyncConfig(context: Context): SyncConfig {
     val prefs = context.getSharedPreferences("notion", Context.MODE_PRIVATE)
     return SyncConfig(
@@ -3283,7 +3287,6 @@ class AutoSyncWorker(
         val client = when (HealthConnectClient.getSdkStatus(applicationContext)) {
             HealthConnectClient.SDK_AVAILABLE -> HealthConnectClient.getOrCreate(applicationContext)
             else -> {
-                recordAutoSyncFailure(applicationContext, "再試行", "Health Connectが利用できません")
                 return Result.retry()
             }
         }
@@ -3314,16 +3317,14 @@ class AutoSyncWorker(
             scheduleNextAutoSync(applicationContext)
             Result.success()
         } catch (_: CancellationException) {
-            recordAutoSyncFailure(applicationContext, "再試行", "自動同期がキャンセルされました")
             Result.retry()
         } catch (e: Exception) {
-            val shouldRetry = (e as? NotionRequestException)?.isRetryable != false
-            recordAutoSyncFailure(
-                applicationContext,
-                if (shouldRetry) "再試行" else "失敗",
-                workerErrorMessage(e)
-            )
-            if (shouldRetry) Result.retry() else Result.failure()
+            if (isRetryableAutoSyncError(e)) {
+                Result.retry()
+            } else {
+                recordAutoSyncFailure(applicationContext, "失敗", workerErrorMessage(e))
+                Result.failure()
+            }
         }
     }
 }
