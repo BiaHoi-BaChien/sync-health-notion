@@ -44,7 +44,6 @@ import androidx.health.connect.client.records.BloodPressureRecord
 import androidx.health.connect.client.records.HeartRateRecord
 import androidx.health.connect.client.records.StepsRecord
 import androidx.health.connect.client.records.WeightRecord
-import androidx.health.connect.client.records.metadata.DataOrigin
 import androidx.health.connect.client.records.metadata.Metadata
 import androidx.health.connect.client.request.AggregateGroupByPeriodRequest
 import androidx.health.connect.client.request.ReadRecordsRequest
@@ -2617,7 +2616,7 @@ class MainActivity : ComponentActivity() {
     private fun StepDebugSyncResult.toDebugDetailsText(): String {
         val rawTotal = details.sumOf { it.steps }
         val lines = mutableListOf<String>()
-        lines.add("集計対象origin: $GOOGLE_FIT_PACKAGE_NAME")
+        lines.add("集計対象origin: すべて")
         lines.add("GoogleHealth明細の合計歩数: ${rawTotal}歩")
         if (rawTotal != measurement.steps) {
             lines.add("差分: ${measurement.steps - rawTotal}歩")
@@ -2660,7 +2659,7 @@ class MainActivity : ComponentActivity() {
         val lines = mutableListOf<String>()
         lines.add("対象日: ${measurement.date}")
         lines.add("Notion同期結果: ${operation.label}")
-        lines.add("集計対象origin: $GOOGLE_FIT_PACKAGE_NAME")
+        lines.add("集計対象origin: すべて")
         lines.add("Notionへ送信した合計歩数: ${measurement.steps}歩")
         lines.add("GoogleHealth明細の合計歩数: ${rawTotal}歩")
         if (rawTotal != measurement.steps) {
@@ -2814,7 +2813,6 @@ class MainActivity : ComponentActivity() {
             ReadRecordsRequest(
                 recordType = StepsRecord::class,
                 timeRangeFilter = timeRange,
-                dataOriginFilter = GOOGLE_FIT_DATA_ORIGIN_FILTER,
                 ascendingOrder = true,
                 pageSize = 5000
             )
@@ -2837,8 +2835,7 @@ class MainActivity : ComponentActivity() {
             AggregateGroupByPeriodRequest(
                 metrics = setOf(StepsRecord.COUNT_TOTAL),
                 timeRangeFilter = aggregateTimeRange,
-                timeRangeSlicer = Period.ofDays(1),
-                dataOriginFilter = GOOGLE_FIT_DATA_ORIGIN_FILTER
+                timeRangeSlicer = Period.ofDays(1)
             )
         )
 
@@ -3577,7 +3574,6 @@ private object HealthNotionSyncEngine {
             ReadRecordsRequest(
                 recordType = StepsRecord::class,
                 timeRangeFilter = timeRange,
-                dataOriginFilter = GOOGLE_FIT_DATA_ORIGIN_FILTER,
                 ascendingOrder = true,
                 pageSize = 5000
             )
@@ -3590,8 +3586,7 @@ private object HealthNotionSyncEngine {
             AggregateGroupByPeriodRequest(
                 metrics = setOf(StepsRecord.COUNT_TOTAL),
                 timeRangeFilter = aggregateTimeRange,
-                timeRangeSlicer = Period.ofDays(1),
-                dataOriginFilter = GOOGLE_FIT_DATA_ORIGIN_FILTER
+                timeRangeSlicer = Period.ofDays(1)
             )
         )
 
@@ -4365,8 +4360,6 @@ internal fun String.toNotionDateValue(): NotionDateValue =
 internal fun notionTimestampSortValue(timestamp: Instant?): Instant =
     timestamp ?: Instant.EPOCH
 
-private const val GOOGLE_FIT_PACKAGE_NAME = "com.google.android.apps.fitness"
-private val GOOGLE_FIT_DATA_ORIGIN_FILTER = setOf(DataOrigin(GOOGLE_FIT_PACKAGE_NAME))
 private const val AUTO_SYNC_WORK_NAME = "health_notion_auto_sync"
 private const val AUTO_SYNC_TIME_KEY = "autoSyncTime"
 private const val AUTO_SYNC_SCHEDULE_VERSION_KEY = "autoSyncScheduleVersion"
