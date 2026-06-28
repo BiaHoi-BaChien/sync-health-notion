@@ -3597,7 +3597,7 @@ private object HealthNotionSyncEngine {
                 return@mapNotNull null
             }
             val date = bucket.startTime.atZone(zone).toLocalDate()
-            val recordedAt = latestRecordTimeByDate[date] ?: bucket.endTime.atZone(zone).toInstant()
+            val recordedAt = stepRecordedAtForDate(date, latestRecordTimeByDate[date], zone)
             DailyStepMeasurement(
                 date = date,
                 recordedAt = recordedAt,
@@ -3798,6 +3798,9 @@ private fun NotionStepPage.toMeasurement(date: LocalDate): DailyStepMeasurement?
 
 internal fun DailyStepMeasurement.hasSameStepData(other: DailyStepMeasurement): Boolean =
     recordedAt.toMinuteKey() == other.recordedAt.toMinuteKey() && steps == other.steps
+
+internal fun stepRecordedAtForDate(date: LocalDate, latestRecordTime: Instant?, zone: ZoneId): Instant =
+    latestRecordTime ?: date.atStartOfDay(zone).toInstant()
 
 internal fun WeightMeasurement.hasSameWeightData(other: WeightMeasurement): Boolean =
     measuredAt.toMinuteKey() == other.measuredAt.toMinuteKey() && kilograms == other.kilograms
