@@ -1050,6 +1050,7 @@ class MainActivity : ComponentActivity() {
 
     private fun showSettingsHelpDialog(title: String, helpText: String) {
         val density = resources.displayMetrics.density
+        val palette = uiPalette()
         lateinit var dialog: Dialog
 
         val panel = LinearLayout(this).apply {
@@ -1063,30 +1064,30 @@ class MainActivity : ComponentActivity() {
             )
             background = GradientDrawable().apply {
                 cornerRadius = 18 * density
-                setColor(Color.parseColor("#172633"))
-                setStroke((1 * density).toInt(), Color.parseColor("#456577"))
+                setColor(palette.controlBackground)
+                setStroke((1 * density).toInt(), palette.border)
             }
         }
         panel.addView(TextView(this).apply {
             text = title
             textSize = 21f
-            setTextColor(Color.WHITE)
+            setTextColor(palette.primaryText)
             typeface = Typeface.DEFAULT_BOLD
         })
         panel.addView(TextView(this).apply {
             text = helpText
             textSize = 16f
-            setTextColor(Color.parseColor("#D9E3EA"))
+            setTextColor(palette.secondaryText)
             setLineSpacing(0f, 1.18f)
             setPadding(0, (12 * density).toInt(), 0, 0)
         })
         panel.addView(Button(this).apply {
             text = "閉じる"
             typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.parseColor("#081018"))
+            setTextColor(palette.onAccent)
             background = GradientDrawable().apply {
                 cornerRadius = 10 * density
-                setColor(Color.parseColor("#A9DDF5"))
+                setColor(palette.accent)
             }
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
