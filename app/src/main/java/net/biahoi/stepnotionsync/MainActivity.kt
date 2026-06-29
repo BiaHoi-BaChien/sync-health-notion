@@ -7,6 +7,7 @@ import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
@@ -137,6 +138,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var vitalsDirectionSpinner: Spinner
     private lateinit var weightDirectionSpinner: Spinner
     private lateinit var autoSyncSpinner: Spinner
+    private lateinit var uiModeSpinner: Spinner
     private var currentSyncJob: Job? = null
     private var latestDateRefreshJob: Job? = null
     private var syncDialog: Dialog? = null
@@ -183,6 +185,7 @@ class MainActivity : ComponentActivity() {
             applyManualVoiceResult(matches)
         }
         migrateAutoSyncScheduleIfNeeded()
+        applyUiMode()
         showTopPage()
     }
 
@@ -196,6 +199,7 @@ class MainActivity : ComponentActivity() {
 
     private fun showTopPage() {
         val config = currentConfig()
+        val palette = uiPalette()
         val density = resources.displayMetrics.density
         val padding = (18 * density).toInt()
         val root = LinearLayout(this).apply {
@@ -223,7 +227,7 @@ class MainActivity : ComponentActivity() {
                 1,
                 TypedValue.COMPLEX_UNIT_SP,
             )
-            setTextColor(Color.WHITE)
+            setTextColor(palette.primaryText)
             typeface = Typeface.DEFAULT_BOLD
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         })
@@ -235,7 +239,7 @@ class MainActivity : ComponentActivity() {
         root.addView(TextView(this).apply {
             text = "最新データの同期状況を確認できます"
             textSize = 14f
-            setTextColor(Color.parseColor("#AAB7C4"))
+            setTextColor(palette.mutedText)
             setPadding(0, (6 * density).toInt(), 0, (24 * density).toInt())
         })
 
@@ -305,11 +309,11 @@ class MainActivity : ComponentActivity() {
             autoSyncDetailsToggleButton = section.addButton("") { toggleAutoSyncDetails() }.apply {
                 isAllCaps = false
                 gravity = Gravity.CENTER
-                setTextColor(Color.parseColor("#D9E3EA"))
+                setTextColor(palette.secondaryText)
                 background = GradientDrawable().apply {
                     cornerRadius = 10 * density
-                    setColor(Color.parseColor("#22313C"))
-                    setStroke((1 * density).toInt(), Color.parseColor("#38505E"))
+                    setColor(palette.secondaryButtonBackground)
+                    setStroke((1 * density).toInt(), palette.border)
                 }
             }
             updateAutoSyncDetailsToggleButton()
@@ -318,7 +322,7 @@ class MainActivity : ComponentActivity() {
         statusText = TextView(this).apply {
             text = "設定した方向に従ってデータを同期します。"
             textSize = 16f
-            setTextColor(Color.parseColor("#D9E3EA"))
+            setTextColor(palette.secondaryText)
             setPadding(0, (14 * density).toInt(), 0, 0)
         }
         root.addView(statusText)
@@ -334,13 +338,14 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showSettingsPage() {
+        val palette = uiPalette()
         val density = resources.displayMetrics.density
         val padding = (18 * density).toInt()
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(padding, padding, padding, padding)
-            setBackgroundColor(Color.parseColor("#101820"))
+            setBackgroundColor(palette.pageBackground)
             layoutParams = ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
@@ -353,7 +358,7 @@ class MainActivity : ComponentActivity() {
             addView(TextView(this@MainActivity).apply {
                 text = "設定"
                 textSize = 28f
-                setTextColor(Color.WHITE)
+                setTextColor(palette.primaryText)
                 typeface = Typeface.DEFAULT_BOLD
                 layoutParams = LinearLayout.LayoutParams(
                     0,
@@ -370,7 +375,7 @@ class MainActivity : ComponentActivity() {
         root.addView(TextView(this).apply {
             text = "バージョン ${appVersionName()}"
             textSize = 14f
-            setTextColor(Color.parseColor("#AAB7C4"))
+            setTextColor(palette.mutedText)
             setPadding(0, (4 * density).toInt(), 0, (8 * density).toInt())
         })
 
@@ -381,6 +386,15 @@ class MainActivity : ComponentActivity() {
             """.trimIndent()
         )
         tokenInput = root.addInput("ConnectionsのAccess Token", password = true)
+        root.addSectionTitle(
+            title = "表示設定",
+            helpText = """
+                アプリの表示モードを選択します。
+
+                「システム」を選ぶと、スマホ本体のライト／ダーク設定に従います。
+            """.trimIndent()
+        )
+        uiModeSpinner = root.addUiModeSpinner()
         root.addSectionTitle(
             title = "自動同期",
             helpText = """
@@ -468,7 +482,10 @@ class MainActivity : ComponentActivity() {
         updateSettingsTabButtons(tabButtons, 0)
 
         root.addButton("設定を保存") {
-            saveSettings()
+            val uiModeChanged = saveSettings()
+            if (uiModeChanged) {
+                showSettingsPage()
+            }
             setStatusMessage("設定を保存しました。", floating = true)
         }
         root.addButton("トップへ戻る") { showTopPage() }
@@ -477,7 +494,7 @@ class MainActivity : ComponentActivity() {
         statusText = TextView(this).apply {
             text = "NotionのData Source IDとプロパティ名を入力してください。"
             textSize = 16f
-            setTextColor(Color.parseColor("#D9E3EA"))
+            setTextColor(palette.secondaryText)
             setPadding(0, (14 * density).toInt(), 0, 0)
         }
         root.addView(statusText)
@@ -539,15 +556,16 @@ class MainActivity : ComponentActivity() {
 
     private fun createSettingsButton(): ImageButton {
         val density = resources.displayMetrics.density
+        val palette = uiPalette()
         return ImageButton(this).apply {
             contentDescription = "設定"
             tooltipText = "設定"
             setImageResource(R.drawable.ic_settings)
-            imageTintList = android.content.res.ColorStateList.valueOf(Color.WHITE)
+            imageTintList = android.content.res.ColorStateList.valueOf(palette.primaryText)
             background = GradientDrawable().apply {
                 cornerRadius = 14 * density
-                setColor(Color.parseColor("#172633"))
-                setStroke((1 * density).toInt(), Color.parseColor("#2E4656"))
+                setColor(palette.controlBackground)
+                setStroke((1 * density).toInt(), palette.border)
             }
             scaleType = android.widget.ImageView.ScaleType.CENTER
             layoutParams = LinearLayout.LayoutParams((54 * density).toInt(), (54 * density).toInt()).apply {
@@ -556,24 +574,23 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun topBackground(): GradientDrawable =
-        GradientDrawable(
+    private fun topBackground(): GradientDrawable {
+        val palette = uiPalette()
+        return GradientDrawable(
             GradientDrawable.Orientation.TL_BR,
-            intArrayOf(
-                Color.parseColor("#071118"),
-                Color.parseColor("#101C25"),
-                Color.parseColor("#081018")
-            )
+            palette.backgroundGradient
         )
+    }
 
     private fun cardBackground(): GradientDrawable {
         val density = resources.displayMetrics.density
+        val palette = uiPalette()
         return GradientDrawable(
             GradientDrawable.Orientation.TL_BR,
-            intArrayOf(Color.parseColor("#14232E"), Color.parseColor("#101A23"))
+            palette.cardGradient
         ).apply {
             cornerRadius = 16 * density
-            setStroke((1 * density).toInt(), Color.parseColor("#2C4150"))
+            setStroke((1 * density).toInt(), palette.border)
         }
     }
 
@@ -590,6 +607,7 @@ class MainActivity : ComponentActivity() {
         secondaryAction: (() -> Unit)? = null
     ): SyncStatusCardViews {
         val density = resources.displayMetrics.density
+        val palette = uiPalette()
         val presentation = syncCardPresentation(direction)
         val enabled = presentation.enabled
         val card = LinearLayout(context).apply {
@@ -611,7 +629,7 @@ class MainActivity : ComponentActivity() {
         }
         header.addView(ImageView(context).apply {
             setImageResource(iconResId)
-            imageTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#44D7B6"))
+            imageTintList = android.content.res.ColorStateList.valueOf(palette.accent)
             layoutParams = LinearLayout.LayoutParams((28 * density).toInt(), (28 * density).toInt()).apply {
                 rightMargin = (10 * density).toInt()
             }
@@ -619,7 +637,7 @@ class MainActivity : ComponentActivity() {
         header.addView(TextView(context).apply {
             text = title
             textSize = 20f
-            setTextColor(Color.WHITE)
+            setTextColor(palette.primaryText)
             typeface = Typeface.DEFAULT_BOLD
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         })
@@ -637,7 +655,7 @@ class MainActivity : ComponentActivity() {
             card.addView(TextView(context).apply {
                 text = "同期しない"
                 textSize = 16f
-                setTextColor(Color.parseColor("#AAB7C4"))
+                setTextColor(palette.mutedText)
                 typeface = Typeface.DEFAULT_BOLD
                 gravity = Gravity.CENTER
                 setPadding(0, (22 * density).toInt(), 0, (10 * density).toInt())
@@ -665,7 +683,7 @@ class MainActivity : ComponentActivity() {
             addView(ImageView(context).apply {
                 setImageResource(R.drawable.ic_arrow_right)
                 imageTintList = android.content.res.ColorStateList.valueOf(
-                    Color.parseColor(if (enabled) "#44D7B6" else "#6E7C86")
+                    if (enabled) palette.accent else palette.disabledText
                 )
                 layoutParams = LinearLayout.LayoutParams((74 * density).toInt(), (26 * density).toInt())
             })
@@ -682,15 +700,17 @@ class MainActivity : ComponentActivity() {
 
     private fun disabledCardBackground(): GradientDrawable {
         val density = resources.displayMetrics.density
+        val palette = uiPalette()
         return GradientDrawable().apply {
             cornerRadius = 16 * density
-            setColor(Color.parseColor("#171D22"))
-            setStroke((1 * density).toInt(), Color.parseColor("#39434A"))
+            setColor(palette.disabledCard)
+            setStroke((1 * density).toInt(), palette.border)
         }
     }
 
     private fun LinearLayout.addEndpoint(label: String, iconResId: Int): TextView {
         val density = resources.displayMetrics.density
+        val palette = uiPalette()
         val column = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
@@ -699,12 +719,12 @@ class MainActivity : ComponentActivity() {
         column.addView(ImageView(context).apply {
             setImageResource(iconResId)
             imageTintList = android.content.res.ColorStateList.valueOf(
-                if (iconResId == R.drawable.ic_phone) Color.WHITE else Color.parseColor("#081018")
+                if (iconResId == R.drawable.ic_phone) palette.onAccent else palette.pageBackground
             )
             background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
-                setColor(if (iconResId == R.drawable.ic_phone) Color.parseColor("#44D7B6") else Color.WHITE)
-                setStroke((3 * density).toInt(), Color.parseColor("#203642"))
+                setColor(if (iconResId == R.drawable.ic_phone) palette.accent else palette.primaryText)
+                setStroke((3 * density).toInt(), palette.border)
             }
             setPadding((18 * density).toInt(), (18 * density).toInt(), (18 * density).toInt(), (18 * density).toInt())
             layoutParams = LinearLayout.LayoutParams((80 * density).toInt(), (80 * density).toInt())
@@ -712,7 +732,7 @@ class MainActivity : ComponentActivity() {
         column.addView(TextView(context).apply {
             text = label
             textSize = 17f
-            setTextColor(Color.WHITE)
+            setTextColor(palette.primaryText)
             typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.CENTER
             setPadding(0, (10 * density).toInt(), 0, 0)
@@ -720,7 +740,7 @@ class MainActivity : ComponentActivity() {
         val dateText = TextView(context).apply {
             text = "確認中..."
             textSize = 13.5f
-            setTextColor(Color.parseColor("#44D7B6"))
+            setTextColor(palette.accent)
             typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.CENTER
             setSingleLine(true)
@@ -741,6 +761,7 @@ class MainActivity : ComponentActivity() {
         action: (() -> Unit)? = null
     ): LinearLayout {
         val density = resources.displayMetrics.density
+        val palette = uiPalette()
         val card = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding((16 * density).toInt(), (14 * density).toInt(), (16 * density).toInt(), (14 * density).toInt())
@@ -759,7 +780,7 @@ class MainActivity : ComponentActivity() {
         if (iconResId != null) {
             header.addView(ImageView(context).apply {
                 setImageResource(iconResId)
-                imageTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#44D7B6"))
+                imageTintList = android.content.res.ColorStateList.valueOf(palette.accent)
                 layoutParams = LinearLayout.LayoutParams((28 * density).toInt(), (28 * density).toInt()).apply {
                     rightMargin = (10 * density).toInt()
                 }
@@ -768,7 +789,7 @@ class MainActivity : ComponentActivity() {
         header.addView(TextView(context).apply {
             text = title
             textSize = 18f
-            setTextColor(Color.WHITE)
+            setTextColor(palette.primaryText)
             typeface = Typeface.DEFAULT_BOLD
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         })
@@ -782,7 +803,7 @@ class MainActivity : ComponentActivity() {
             card.addView(TextView(context).apply {
                 text = it
                 textSize = 13f
-                setTextColor(Color.parseColor("#7ED7FF"))
+                setTextColor(palette.infoText)
                 setPadding(0, (4 * density).toInt(), 0, 0)
             })
         }
@@ -792,13 +813,14 @@ class MainActivity : ComponentActivity() {
 
     private fun createCardTextButton(label: String, description: String, onClick: () -> Unit): Button {
         val density = resources.displayMetrics.density
+        val palette = uiPalette()
         return Button(this).apply {
             text = label
             contentDescription = description
             tooltipText = description
             textSize = 13f
             typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.parseColor("#081018"))
+            setTextColor(palette.onAccent)
             minHeight = (40 * density).toInt()
             minWidth = 0
             minimumWidth = 0
@@ -806,7 +828,7 @@ class MainActivity : ComponentActivity() {
             setPadding((14 * density).toInt(), 0, (14 * density).toInt(), 0)
             background = GradientDrawable().apply {
                 cornerRadius = 12 * density
-                setColor(Color.parseColor("#44D7B6"))
+                setColor(palette.accent)
             }
             backgroundTintList = null
             layoutParams = LinearLayout.LayoutParams(
@@ -821,14 +843,15 @@ class MainActivity : ComponentActivity() {
 
     private fun createCardIconButton(description: String, iconResId: Int, onClick: () -> Unit): ImageButton {
         val density = resources.displayMetrics.density
+        val palette = uiPalette()
         return ImageButton(this).apply {
             contentDescription = description
             tooltipText = description
             setImageResource(iconResId)
-            imageTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#081018"))
+            imageTintList = android.content.res.ColorStateList.valueOf(palette.onAccent)
             background = GradientDrawable().apply {
                 cornerRadius = 12 * density
-                setColor(Color.parseColor("#44D7B6"))
+                setColor(palette.accent)
             }
             scaleType = android.widget.ImageView.ScaleType.CENTER
             layoutParams = LinearLayout.LayoutParams((44 * density).toInt(), (44 * density).toInt()).apply {
@@ -840,6 +863,7 @@ class MainActivity : ComponentActivity() {
 
     private fun LinearLayout.addUpdateNoticeCard(): UpdateNoticeViews {
         val density = resources.displayMetrics.density
+        val palette = uiPalette()
         val card = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
@@ -859,19 +883,19 @@ class MainActivity : ComponentActivity() {
         card.addView(TextView(context).apply {
             text = "新しいバージョンがあります"
             textSize = 18f
-            setTextColor(Color.WHITE)
+            setTextColor(palette.primaryText)
             typeface = Typeface.DEFAULT_BOLD
         })
         val message = TextView(context).apply {
             textSize = 14f
-            setTextColor(Color.parseColor("#D9E3EA"))
+            setTextColor(palette.secondaryText)
             setPadding(0, (6 * density).toInt(), 0, 0)
         }
         card.addView(message)
         val button = Button(context).apply {
             text = "最新版をダウンロード"
             typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.parseColor("#081018"))
+            setTextColor(palette.onAccent)
             background = GradientDrawable().apply {
                 cornerRadius = 10 * density
                 setColor(Color.parseColor("#A6E05A"))
@@ -894,6 +918,7 @@ class MainActivity : ComponentActivity() {
 
     private fun LinearLayout.addDateRow(label: String, role: String?): TextView {
         val density = resources.displayMetrics.density
+        val palette = uiPalette()
         val row = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -902,13 +927,13 @@ class MainActivity : ComponentActivity() {
         row.addView(TextView(context).apply {
             text = role?.let { "$label（$it）" } ?: label
             textSize = 14f
-            setTextColor(Color.parseColor("#AAB7C4"))
+            setTextColor(palette.mutedText)
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         })
         val value = TextView(context).apply {
             text = "確認中..."
             textSize = 20f
-            setTextColor(Color.parseColor("#44D7B6"))
+            setTextColor(palette.accent)
             typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.END
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
@@ -920,6 +945,7 @@ class MainActivity : ComponentActivity() {
 
     private fun LinearLayout.addAutoSyncFailureClearRow(onClick: () -> Unit): ImageButton {
         val density = resources.displayMetrics.density
+        val palette = uiPalette()
         val row = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -928,7 +954,7 @@ class MainActivity : ComponentActivity() {
         row.addView(TextView(context).apply {
             text = "削除対象: 最終失敗・失敗理由"
             textSize = 13f
-            setTextColor(Color.parseColor("#AAB7C4"))
+            setTextColor(palette.mutedText)
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         })
         val button = ImageButton(context).apply {
@@ -954,10 +980,11 @@ class MainActivity : ComponentActivity() {
 
     private fun LinearLayout.addTrademarkNotice() {
         val density = resources.displayMetrics.density
+        val palette = uiPalette()
         addView(TextView(context).apply {
             text = NOTION_TRADEMARK_NOTICE
             textSize = 12.5f
-            setTextColor(Color.parseColor("#AAB7C4"))
+            setTextColor(palette.mutedText)
             setLineSpacing(0f, 1.15f)
             setPadding(0, (18 * density).toInt(), 0, 0)
         })
@@ -965,6 +992,7 @@ class MainActivity : ComponentActivity() {
 
     private fun LinearLayout.addSectionTitle(title: String, helpText: String) {
         val density = resources.displayMetrics.density
+        val palette = uiPalette()
         val row = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -973,7 +1001,7 @@ class MainActivity : ComponentActivity() {
         row.addView(TextView(context).apply {
             text = title
             textSize = 18f
-            setTextColor(Color.WHITE)
+            setTextColor(palette.primaryText)
             typeface = Typeface.DEFAULT_BOLD
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -984,11 +1012,11 @@ class MainActivity : ComponentActivity() {
             contentDescription = "${title}のヘルプ"
             tooltipText = "${title}の説明"
             setImageResource(R.drawable.ic_help_outline)
-            imageTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#A9DDF5"))
+            imageTintList = android.content.res.ColorStateList.valueOf(palette.infoText)
             background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
-                setColor(Color.parseColor("#172633"))
-                setStroke((1 * density).toInt(), Color.parseColor("#456577"))
+                setColor(palette.controlBackground)
+                setStroke((1 * density).toInt(), palette.border)
             }
             scaleType = android.widget.ImageView.ScaleType.CENTER_INSIDE
             setPadding(
@@ -1092,10 +1120,11 @@ class MainActivity : ComponentActivity() {
 
     private fun LinearLayout.addInput(hintText: String, password: Boolean = false): EditText {
         val density = resources.displayMetrics.density
+        val palette = uiPalette()
         val input = EditText(context).apply {
             hint = hintText
-            setHintTextColor(Color.parseColor("#7D8A96"))
-            setTextColor(Color.WHITE)
+            setHintTextColor(palette.hintText)
+            setTextColor(palette.primaryText)
             setSingleLine(true)
             inputType = if (password) {
                 InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
@@ -1104,8 +1133,8 @@ class MainActivity : ComponentActivity() {
             }
             background = GradientDrawable().apply {
                 cornerRadius = 10 * density
-                setColor(Color.parseColor("#182630"))
-                setStroke((1 * density).toInt(), Color.parseColor("#2D3F4D"))
+                setColor(palette.inputBackground)
+                setStroke((1 * density).toInt(), palette.border)
             }
             layoutParams = ViewGroup.MarginLayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -1139,16 +1168,17 @@ class MainActivity : ComponentActivity() {
         }
 
     private fun updateSettingsTabButtons(container: LinearLayout, selectedIndex: Int) {
+        val palette = uiPalette()
         for (index in 0 until container.childCount) {
             val button = container.getChildAt(index) as Button
             val selected = index == selectedIndex
-            button.setTextColor(Color.parseColor(if (selected) "#081018" else "#D9E3EA"))
+            button.setTextColor(if (selected) palette.onAccent else palette.secondaryText)
             button.background = GradientDrawable().apply {
                 cornerRadius = 10 * resources.displayMetrics.density
-                setColor(Color.parseColor(if (selected) "#44D7B6" else "#22313C"))
+                setColor(if (selected) palette.accent else palette.secondaryButtonBackground)
                 setStroke(
                     resources.displayMetrics.density.toInt().coerceAtLeast(1),
-                    Color.parseColor("#38505E")
+                    palette.border
                 )
             }
         }
@@ -1156,12 +1186,13 @@ class MainActivity : ComponentActivity() {
 
     private fun createActionButton(label: String, iconResId: Int?, onClick: () -> Unit): Button {
         val density = resources.displayMetrics.density
+        val palette = uiPalette()
         val cornerRadius = 10 * density
         return Button(this).apply {
             text = label
             textSize = 16f
             typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.parseColor("#081018"))
+            setTextColor(palette.onAccent)
             minHeight = (52 * density).toInt()
             isAllCaps = false
             background = GradientDrawable().apply {
@@ -1175,7 +1206,7 @@ class MainActivity : ComponentActivity() {
                     cornerRadius,
                     cornerRadius,
                 )
-                setColor(Color.parseColor("#44D7B6"))
+                setColor(palette.accent)
             }
             backgroundTintList = null
             layoutParams = ViewGroup.MarginLayoutParams(
@@ -1187,57 +1218,51 @@ class MainActivity : ComponentActivity() {
             if (iconResId != null) {
                 setCompoundDrawablesWithIntrinsicBounds(iconResId, 0, 0, 0)
                 compoundDrawablePadding = (8 * density).toInt()
-                compoundDrawableTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#081018"))
+                compoundDrawableTintList = android.content.res.ColorStateList.valueOf(palette.onAccent)
             }
             setOnClickListener { onClick() }
         }
     }
 
     private fun LinearLayout.addAutoSyncSpinner(): Spinner {
-        val density = resources.displayMetrics.density
         val choices = autoSyncChoices()
-        val spinner = Spinner(context).apply {
-            adapter = ArrayAdapter(
-                context,
-                android.R.layout.simple_spinner_dropdown_item,
-                choices.map { it.label }
-            )
-            background = GradientDrawable().apply {
-                cornerRadius = 8 * density
-                setColor(Color.parseColor("#F2F7FA"))
-            }
-            layoutParams = ViewGroup.MarginLayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply {
-                topMargin = (6 * density).toInt()
-                bottomMargin = (8 * density).toInt()
-            }
-        }
+        val spinner = createSettingsSpinner(choices.map { it.label }, 6, 8)
+        addView(spinner)
+        return spinner
+    }
+
+    private fun LinearLayout.addUiModeSpinner(): Spinner {
+        val spinner = createSettingsSpinner(UiModePreference.entries.map { it.label }, 6, 8)
         addView(spinner)
         return spinner
     }
 
     private fun LinearLayout.addSyncDirectionSpinner(): Spinner {
+        return createSettingsSpinner(SyncDirection.entries.map { it.label }, 10, 4).apply {
+            this@addSyncDirectionSpinner.addView(this)
+        }
+    }
+
+    private fun createSettingsSpinner(labels: List<String>, topMarginDp: Int, bottomMarginDp: Int): Spinner {
         val density = resources.displayMetrics.density
-        return Spinner(context).apply {
+        val palette = uiPalette()
+        return Spinner(this).apply {
             adapter = ArrayAdapter(
                 context,
                 android.R.layout.simple_spinner_dropdown_item,
-                SyncDirection.entries.map { it.label }
+                labels
             )
             background = GradientDrawable().apply {
                 cornerRadius = 8 * density
-                setColor(Color.parseColor("#F2F7FA"))
+                setColor(palette.spinnerBackground)
             }
             layoutParams = ViewGroup.MarginLayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply {
-                topMargin = (10 * density).toInt()
-                bottomMargin = (4 * density).toInt()
+                topMargin = (topMarginDp * density).toInt()
+                bottomMargin = (bottomMarginDp * density).toInt()
             }
-            this@addSyncDirectionSpinner.addView(this)
         }
     }
 
@@ -1262,10 +1287,13 @@ class MainActivity : ComponentActivity() {
         weightDirectionSpinner.setSelection(SyncDirection.indexOf(prefs.getString(WEIGHT_DIRECTION_KEY, null)))
         val autoSyncTime = prefs.getString(AUTO_SYNC_TIME_KEY, AUTO_SYNC_OFF) ?: AUTO_SYNC_OFF
         autoSyncSpinner.setSelection(autoSyncChoices().indexOfFirst { it.value == autoSyncTime }.coerceAtLeast(0))
+        uiModeSpinner.setSelection(UiModePreference.indexOf(prefs.getString(UI_MODE_KEY, null)))
     }
 
-    private fun saveSettings() {
+    private fun saveSettings(): Boolean {
         val prefs = getSharedPreferences("notion", Context.MODE_PRIVATE)
+        val previousUiMode = loadUiMode()
+        val selectedUiMode = UiModePreference.entries[uiModeSpinner.selectedItemPosition].value
         SecureSettingsStore.saveToken(prefs, tokenInput.text.toString().trim())
         prefs.edit()
             .putString("stepsDataSource", stepsDataSourceInput.text.toString().trim())
@@ -1283,8 +1311,11 @@ class MainActivity : ComponentActivity() {
             .putString(VITALS_DIRECTION_KEY, SyncDirection.entries[vitalsDirectionSpinner.selectedItemPosition].value)
             .putString(WEIGHT_DIRECTION_KEY, SyncDirection.entries[weightDirectionSpinner.selectedItemPosition].value)
             .putString(AUTO_SYNC_TIME_KEY, autoSyncChoices()[autoSyncSpinner.selectedItemPosition].value)
+            .putString(UI_MODE_KEY, selectedUiMode)
             .apply()
+        applyUiMode()
         scheduleAutoSync(this, loadAutoSyncTime())
+        return previousUiMode != selectedUiMode
     }
 
     private fun currentConfig(): SyncConfig {
@@ -2947,6 +2978,38 @@ class MainActivity : ComponentActivity() {
     private fun appVersionName(): String =
         packageManager.getPackageInfo(packageName, 0).versionName ?: "unknown"
 
+    @Suppress("DEPRECATION")
+    private fun applyUiMode() {
+        val palette = uiPalette()
+        window.statusBarColor = palette.pageBackground
+        window.navigationBarColor = palette.pageBackground
+        val lightSystemBars = !isDarkUiMode()
+        window.decorView.systemUiVisibility = if (lightSystemBars) {
+            View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+        } else {
+            0
+        }
+    }
+
+    private fun uiPalette(): UiPalette =
+        if (isDarkUiMode()) UiPalette.dark() else UiPalette.light()
+
+    private fun isDarkUiMode(): Boolean {
+        return when (UiModePreference.from(loadUiMode())) {
+            UiModePreference.SYSTEM -> {
+                resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK ==
+                    Configuration.UI_MODE_NIGHT_YES
+            }
+            UiModePreference.LIGHT -> false
+            UiModePreference.DARK -> true
+        }
+    }
+
+    private fun loadUiMode(): String {
+        return getSharedPreferences("notion", Context.MODE_PRIVATE)
+            .getString(UI_MODE_KEY, UiModePreference.SYSTEM.value) ?: UiModePreference.SYSTEM.value
+    }
+
     private fun refreshLatestReleaseNotice(views: UpdateNoticeViews) {
         CoroutineScope(Dispatchers.Main).launch {
             val currentVersion = appVersionName().toSemanticVersion() ?: return@launch
@@ -2998,6 +3061,89 @@ private data class SettingsTab(
     val label: String,
     val content: LinearLayout
 )
+
+private data class UiPalette(
+    val pageBackground: Int,
+    val backgroundGradient: IntArray,
+    val cardGradient: IntArray,
+    val disabledCard: Int,
+    val controlBackground: Int,
+    val inputBackground: Int,
+    val secondaryButtonBackground: Int,
+    val spinnerBackground: Int,
+    val primaryText: Int,
+    val secondaryText: Int,
+    val mutedText: Int,
+    val hintText: Int,
+    val disabledText: Int,
+    val infoText: Int,
+    val border: Int,
+    val accent: Int,
+    val onAccent: Int
+) {
+    companion object {
+        fun dark(): UiPalette = UiPalette(
+            pageBackground = Color.parseColor("#101820"),
+            backgroundGradient = intArrayOf(
+                Color.parseColor("#071118"),
+                Color.parseColor("#101C25"),
+                Color.parseColor("#081018")
+            ),
+            cardGradient = intArrayOf(Color.parseColor("#14232E"), Color.parseColor("#101A23")),
+            disabledCard = Color.parseColor("#171D22"),
+            controlBackground = Color.parseColor("#172633"),
+            inputBackground = Color.parseColor("#182630"),
+            secondaryButtonBackground = Color.parseColor("#22313C"),
+            spinnerBackground = Color.parseColor("#F2F7FA"),
+            primaryText = Color.WHITE,
+            secondaryText = Color.parseColor("#D9E3EA"),
+            mutedText = Color.parseColor("#AAB7C4"),
+            hintText = Color.parseColor("#7D8A96"),
+            disabledText = Color.parseColor("#6E7C86"),
+            infoText = Color.parseColor("#A9DDF5"),
+            border = Color.parseColor("#38505E"),
+            accent = Color.parseColor("#44D7B6"),
+            onAccent = Color.parseColor("#081018")
+        )
+
+        fun light(): UiPalette = UiPalette(
+            pageBackground = Color.parseColor("#F6FAFC"),
+            backgroundGradient = intArrayOf(
+                Color.parseColor("#F7FBFC"),
+                Color.parseColor("#EEF6F7"),
+                Color.parseColor("#FFFFFF")
+            ),
+            cardGradient = intArrayOf(Color.parseColor("#FFFFFF"), Color.parseColor("#F1F7F8")),
+            disabledCard = Color.parseColor("#EEF3F5"),
+            controlBackground = Color.parseColor("#FFFFFF"),
+            inputBackground = Color.WHITE,
+            secondaryButtonBackground = Color.parseColor("#E8F0F2"),
+            spinnerBackground = Color.WHITE,
+            primaryText = Color.parseColor("#102028"),
+            secondaryText = Color.parseColor("#324650"),
+            mutedText = Color.parseColor("#687782"),
+            hintText = Color.parseColor("#7B8B94"),
+            disabledText = Color.parseColor("#98A4AA"),
+            infoText = Color.parseColor("#0B6E8F"),
+            border = Color.parseColor("#C8D6DC"),
+            accent = Color.parseColor("#0D8F78"),
+            onAccent = Color.WHITE
+        )
+    }
+}
+
+internal enum class UiModePreference(val value: String, val label: String) {
+    SYSTEM("system", "システム"),
+    LIGHT("light", "ライト"),
+    DARK("dark", "ダーク");
+
+    companion object {
+        fun from(value: String?): UiModePreference =
+            entries.firstOrNull { it.value == value } ?: SYSTEM
+
+        fun indexOf(value: String?): Int = entries.indexOf(from(value))
+    }
+}
 
 internal data class SyncConfig(
     val token: String,
@@ -4377,6 +4523,7 @@ private const val AUTO_SYNC_RESULT_DETAILS_KEY = "autoSyncResultDetails"
 private const val STEPS_DIRECTION_KEY = "stepsSyncDirection"
 private const val VITALS_DIRECTION_KEY = "vitalsSyncDirection"
 private const val WEIGHT_DIRECTION_KEY = "weightSyncDirection"
+private const val UI_MODE_KEY = "uiMode"
 private const val DEFAULT_LOOKBACK_DAYS = 30L
 private const val NOTION_API_VERSION = "2026-03-11"
 private const val NOTION_MAX_REQUEST_ATTEMPTS = 3
