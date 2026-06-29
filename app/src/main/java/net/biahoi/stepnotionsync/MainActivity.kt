@@ -711,6 +711,8 @@ class MainActivity : ComponentActivity() {
     private fun LinearLayout.addEndpoint(label: String, iconResId: Int): TextView {
         val density = resources.displayMetrics.density
         val palette = uiPalette()
+        val isPhoneIcon = iconResId == R.drawable.ic_phone
+        val isLightNotionIcon = iconResId == R.drawable.ic_notion && !isDarkUiMode()
         val column = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
@@ -719,11 +721,21 @@ class MainActivity : ComponentActivity() {
         column.addView(ImageView(context).apply {
             setImageResource(iconResId)
             imageTintList = android.content.res.ColorStateList.valueOf(
-                if (iconResId == R.drawable.ic_phone) palette.onAccent else palette.pageBackground
+                when {
+                    isPhoneIcon -> palette.onAccent
+                    isLightNotionIcon -> Color.BLACK
+                    else -> palette.pageBackground
+                }
             )
             background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
-                setColor(if (iconResId == R.drawable.ic_phone) palette.accent else palette.primaryText)
+                setColor(
+                    when {
+                        isPhoneIcon -> palette.accent
+                        isLightNotionIcon -> Color.WHITE
+                        else -> palette.primaryText
+                    }
+                )
                 setStroke((3 * density).toInt(), palette.border)
             }
             setPadding((18 * density).toInt(), (18 * density).toInt(), (18 * density).toInt(), (18 * density).toInt())
