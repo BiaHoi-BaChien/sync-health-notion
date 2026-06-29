@@ -85,4 +85,18 @@ class WeightMeasurementTest {
         assertEquals("61.3", formatManualWeight(61.25))
         assertEquals("61.0", formatManualWeight(61.0))
     }
+
+    @Test
+    fun warnsWhenManualWeightDiffersFromRecentMedian() {
+        val warnings = weightInputWarnings(
+            measurement = WeightMeasurement(Instant.parse("2026-06-13T01:02:03Z"), 68.2),
+            recentMeasurements = listOf(
+                WeightMeasurement(Instant.parse("2026-06-10T01:02:03Z"), 61.0),
+                WeightMeasurement(Instant.parse("2026-06-11T01:02:03Z"), 61.2),
+                WeightMeasurement(Instant.parse("2026-06-12T01:02:03Z"), 61.4)
+            )
+        )
+
+        assertEquals(listOf("体重が最近の中央値61.2kgと大きく異なります。"), warnings)
+    }
 }

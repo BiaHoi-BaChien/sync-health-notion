@@ -711,6 +711,8 @@ class MainActivity : ComponentActivity() {
     private fun LinearLayout.addEndpoint(label: String, iconResId: Int): TextView {
         val density = resources.displayMetrics.density
         val palette = uiPalette()
+        val isPhoneIcon = iconResId == R.drawable.ic_phone
+        val isLightNotionIcon = iconResId == R.drawable.ic_notion && !isDarkUiMode()
         val column = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
@@ -719,11 +721,21 @@ class MainActivity : ComponentActivity() {
         column.addView(ImageView(context).apply {
             setImageResource(iconResId)
             imageTintList = android.content.res.ColorStateList.valueOf(
-                if (iconResId == R.drawable.ic_phone) palette.onAccent else palette.pageBackground
+                when {
+                    isPhoneIcon -> palette.onAccent
+                    isLightNotionIcon -> Color.BLACK
+                    else -> palette.pageBackground
+                }
             )
             background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
-                setColor(if (iconResId == R.drawable.ic_phone) palette.accent else palette.primaryText)
+                setColor(
+                    when {
+                        isPhoneIcon -> palette.accent
+                        isLightNotionIcon -> Color.WHITE
+                        else -> palette.primaryText
+                    }
+                )
                 setStroke((3 * density).toInt(), palette.border)
             }
             setPadding((18 * density).toInt(), (18 * density).toInt(), (18 * density).toInt(), (18 * density).toInt())
@@ -1766,7 +1778,7 @@ class MainActivity : ComponentActivity() {
                     return@setOnClickListener
                 }
                 dialog.dismiss()
-                registerManualWeightToHealthConnect(measurement)
+                confirmAndRegisterManualWeightToHealthConnect(measurement)
             }
         })
         panel.addView(buttons)
@@ -1923,7 +1935,7 @@ class MainActivity : ComponentActivity() {
                     return@setOnClickListener
                 }
                 dialog.dismiss()
-                registerManualVitalToHealthConnect(measurement)
+                confirmAndRegisterManualVitalToHealthConnect(measurement)
             }
         })
         panel.addView(buttons)
@@ -2172,22 +2184,35 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun registerManualVitalToHealthConnect(measurement: VitalMeasurement) {
+    private fun confirmAndRegisterManualVitalToHealthConnect(measurement: VitalMeasurement) {
         if (currentSyncJob?.isActive == true) {
             return
         }
 
-        val message = "バイタルをHealth Connectに登録中..."
+        val message = "入力値を確認中..."
         setStatusMessage(message)
         showSyncDialog(message)
         currentSyncJob = CoroutineScope(Dispatchers.Main).launch {
             try {
                 val client = checkedHealthClient(MANUAL_VITAL_REQUIRED_PERMISSIONS) ?: return@launch
-                withContext(Dispatchers.IO) {
-                    client.insertRecords(measurement.toHealthConnectRecords())
+                val recentMeasurements = withContext(Dispatchers.IO) {
+                    HealthNotionSyncEngine.readVitalMeasurements(client, lookbackDays)
                 }
-                setStatusMessage("バイタルをHealth Connectに登録しました。", floating = true)
-                refreshLatestDates()
+                val warnings = vitalInputWarnings(measurement, recentMeasurements)
+                dismissSyncDialog()
+                if (warnings.isNotEmpty()) {
+                    val shouldContinue = showInputConfirmationDialog(
+                        title = "バイタルの入力値を確認",
+                        valueSummary = measurement.toConfirmationSummary(),
+                        warnings = warnings,
+                        continueText = "このまま登録"
+                    )
+                    if (!shouldContinue) {
+                        setStatusMessage("バイタルの登録を中止しました。", floating = true)
+                        return@launch
+                    }
+                }
+                insertManualVitalToHealthConnect(client, measurement)
             } catch (e: Exception) {
                 setStatusMessage("バイタルの登録に失敗しました: ${safeErrorMessage(e)}", floating = true)
             } finally {
@@ -2197,24 +2222,49 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun registerManualWeightToHealthConnect(measurement: WeightMeasurement) {
+    private suspend fun insertManualVitalToHealthConnect(
+        client: HealthConnectClient,
+        measurement: VitalMeasurement
+    ) {
+        val message = "バイタルをHealth Connectに登録中..."
+        setStatusMessage(message)
+        showSyncDialog(message)
+        withContext(Dispatchers.IO) {
+            client.insertRecords(measurement.toHealthConnectRecords())
+        }
+        setStatusMessage("バイタルをHealth Connectに登録しました。", floating = true)
+        refreshLatestDates()
+    }
+
+    private fun confirmAndRegisterManualWeightToHealthConnect(measurement: WeightMeasurement) {
         if (currentSyncJob?.isActive == true) {
             return
         }
 
-        val message = "体重をHealth Connectに登録中..."
+        val message = "入力値を確認中..."
         setStatusMessage(message)
         showSyncDialog(message)
         currentSyncJob = CoroutineScope(Dispatchers.Main).launch {
             try {
                 val client = checkedHealthClient(MANUAL_WEIGHT_REQUIRED_PERMISSIONS) ?: return@launch
-                withContext(Dispatchers.IO) {
-                    client.insertRecords(
-                        listOf(measurement.toHealthConnectRecord(metadataIdPrefix = "manual-weight"))
-                    )
+                val recentMeasurements = withContext(Dispatchers.IO) {
+                    HealthNotionSyncEngine.readWeightMeasurements(client, lookbackDays)
                 }
-                setStatusMessage("体重をHealth Connectに登録しました。", floating = true)
-                refreshLatestDates()
+                val warnings = weightInputWarnings(measurement, recentMeasurements)
+                dismissSyncDialog()
+                if (warnings.isNotEmpty()) {
+                    val shouldContinue = showInputConfirmationDialog(
+                        title = "体重の入力値を確認",
+                        valueSummary = measurement.toConfirmationSummary(),
+                        warnings = warnings,
+                        continueText = "このまま登録"
+                    )
+                    if (!shouldContinue) {
+                        setStatusMessage("体重の登録を中止しました。", floating = true)
+                        return@launch
+                    }
+                }
+                insertManualWeightToHealthConnect(client, measurement)
             } catch (e: Exception) {
                 setStatusMessage("体重の登録に失敗しました: ${safeErrorMessage(e)}", floating = true)
             } finally {
@@ -2222,6 +2272,22 @@ class MainActivity : ComponentActivity() {
                 dismissSyncDialog()
             }
         }
+    }
+
+    private suspend fun insertManualWeightToHealthConnect(
+        client: HealthConnectClient,
+        measurement: WeightMeasurement
+    ) {
+        val message = "体重をHealth Connectに登録中..."
+        setStatusMessage(message)
+        showSyncDialog(message)
+        withContext(Dispatchers.IO) {
+            client.insertRecords(
+                listOf(measurement.toHealthConnectRecord(metadataIdPrefix = "manual-weight"))
+            )
+        }
+        setStatusMessage("体重をHealth Connectに登録しました。", floating = true)
+        refreshLatestDates()
     }
 
     private fun syncAllToNotion() {
@@ -2585,6 +2651,128 @@ class MainActivity : ComponentActivity() {
             })
             buttons.addView(Button(this).apply {
                 text = "再開"
+                typeface = Typeface.DEFAULT_BOLD
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    leftMargin = (8 * density).toInt()
+                }
+                setOnClickListener {
+                    if (continuation.isActive) {
+                        continuation.resume(true)
+                    }
+                    dialog.dismiss()
+                }
+            })
+            panel.addView(buttons)
+
+            dialog = Dialog(this).apply {
+                requestWindowFeature(Window.FEATURE_NO_TITLE)
+                setCancelable(false)
+                setCanceledOnTouchOutside(false)
+                setContentView(FrameLayout(this@MainActivity).apply {
+                    addView(panel)
+                })
+                window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+                window?.setDimAmount(0.64f)
+                setOnDismissListener {
+                    if (messageDialog === this) {
+                        messageDialog = null
+                    }
+                }
+                show()
+                window?.setLayout(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                )
+            }
+            messageDialog = dialog
+            continuation.invokeOnCancellation {
+                dialog.dismiss()
+                if (messageDialog === dialog) {
+                    messageDialog = null
+                }
+            }
+        }
+
+    private suspend fun showInputConfirmationDialog(
+        title: String,
+        valueSummary: String,
+        warnings: List<String>,
+        continueText: String
+    ): Boolean =
+        suspendCancellableCoroutine { continuation ->
+            messageDialog?.dismiss()
+
+            val density = resources.displayMetrics.density
+            lateinit var dialog: Dialog
+            val panel = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(
+                    (20 * density).toInt(),
+                    (20 * density).toInt(),
+                    (20 * density).toInt(),
+                    (18 * density).toInt()
+                )
+                background = GradientDrawable().apply {
+                    cornerRadius = 14 * density
+                    setColor(Color.parseColor("#17232D"))
+                    setStroke((1 * density).toInt(), Color.parseColor("#F5C542"))
+                }
+                layoutParams = FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.CENTER
+                ).apply {
+                    leftMargin = (24 * density).toInt()
+                    rightMargin = (24 * density).toInt()
+                }
+            }
+            panel.addView(TextView(this).apply {
+                text = title
+                textSize = 20f
+                setTextColor(Color.WHITE)
+                typeface = Typeface.DEFAULT_BOLD
+            })
+            panel.addView(TextView(this).apply {
+                text = buildString {
+                    append("入力値が通常と異なる可能性があります。\n\n")
+                    append(valueSummary)
+                    append("\n\n")
+                    warnings.forEach { warning ->
+                        append("・")
+                        append(warning)
+                        append("\n")
+                    }
+                }.trimEnd()
+                textSize = 15f
+                setTextColor(Color.parseColor("#D9E3EA"))
+                setLineSpacing(0f, 1.12f)
+                setPadding(0, (12 * density).toInt(), 0, 0)
+            })
+
+            val buttons = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply {
+                    topMargin = (16 * density).toInt()
+                }
+            }
+            buttons.addView(Button(this).apply {
+                text = "修正する"
+                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    rightMargin = (8 * density).toInt()
+                }
+                setOnClickListener {
+                    if (continuation.isActive) {
+                        continuation.resume(false)
+                    }
+                    dialog.dismiss()
+                }
+            })
+            buttons.addView(Button(this).apply {
+                text = continueText
                 typeface = Typeface.DEFAULT_BOLD
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
                     leftMargin = (8 * density).toInt()
@@ -3752,7 +3940,7 @@ private object HealthNotionSyncEngine {
         }.sortedBy { it.date }
     }
 
-    private suspend fun readVitalMeasurements(
+    suspend fun readVitalMeasurements(
         client: HealthConnectClient,
         lookbackDays: Long
     ): List<VitalMeasurement> {
@@ -3788,7 +3976,7 @@ private object HealthNotionSyncEngine {
         )
     }
 
-    private suspend fun readWeightMeasurements(
+    suspend fun readWeightMeasurements(
         client: HealthConnectClient,
         lookbackDays: Long
     ): List<WeightMeasurement> {
@@ -3956,6 +4144,58 @@ internal fun VitalMeasurement.hasSameVitalValues(other: VitalMeasurement): Boole
         diastolic == other.diastolic &&
         heartRate == other.heartRate
 
+internal fun vitalInputWarnings(
+    measurement: VitalMeasurement,
+    recentMeasurements: List<VitalMeasurement>
+): List<String> = buildList {
+    if (measurement.systolic <= measurement.diastolic) {
+        add("最高血圧が最低血圧以下です。")
+    }
+    if (measurement.systolic !in 70.0..250.0) {
+        add("最高血圧が一般的な範囲から外れています。")
+    }
+    if (measurement.diastolic !in 40.0..160.0) {
+        add("最低血圧が一般的な範囲から外れています。")
+    }
+    measurement.heartRate?.let { heartRate ->
+        if (heartRate !in 35L..220L) {
+            add("脈拍が一般的な範囲から外れています。")
+        }
+    }
+
+    recentMeasurements.medianOf { it.systolic }?.let { median ->
+        if (kotlin.math.abs(measurement.systolic - median) >= 40.0) {
+            add("最高血圧が最近の中央値${formatComparisonNumber(median)}と大きく異なります。")
+        }
+    }
+    recentMeasurements.medianOf { it.diastolic }?.let { median ->
+        if (kotlin.math.abs(measurement.diastolic - median) >= 25.0) {
+            add("最低血圧が最近の中央値${formatComparisonNumber(median)}と大きく異なります。")
+        }
+    }
+    measurement.heartRate?.let { heartRate ->
+        recentMeasurements.mapNotNull { it.heartRate?.toDouble() }.medianOrNull()?.let { median ->
+            if (kotlin.math.abs(heartRate - median) >= 35.0) {
+                add("脈拍が最近の中央値${formatComparisonNumber(median)}と大きく異なります。")
+            }
+        }
+    }
+}
+
+internal fun weightInputWarnings(
+    measurement: WeightMeasurement,
+    recentMeasurements: List<WeightMeasurement>
+): List<String> = buildList {
+    if (measurement.kilograms !in 20.0..300.0) {
+        add("体重が一般的な範囲から外れています。")
+    }
+    recentMeasurements.medianOf { it.kilograms }?.let { median ->
+        if (kotlin.math.abs(measurement.kilograms - median) >= 3.0) {
+            add("体重が最近の中央値${formatComparisonNumber(median)}kgと大きく異なります。")
+        }
+    }
+}
+
 internal fun latestVitalMeasurementsByMinute(
     measurements: List<VitalMeasurement>
 ): List<VitalMeasurement> =
@@ -3990,6 +4230,41 @@ internal fun parseManualWeight(text: String): Double {
 
 internal fun formatManualWeight(value: Double): String =
     String.format(Locale.JAPAN, "%.1f", value)
+
+private fun VitalMeasurement.toConfirmationSummary(): String =
+    buildString {
+        append("最高血圧: ${formatComparisonNumber(systolic)}\n")
+        append("最低血圧: ${formatComparisonNumber(diastolic)}")
+        heartRate?.let {
+            append("\n脈拍: $it")
+        }
+    }
+
+private fun WeightMeasurement.toConfirmationSummary(): String =
+    "体重: ${formatComparisonNumber(kilograms)}kg"
+
+private fun <T> List<T>.medianOf(selector: (T) -> Double): Double? =
+    map(selector).medianOrNull()
+
+private fun List<Double>.medianOrNull(): Double? {
+    if (isEmpty()) {
+        return null
+    }
+    val values = sorted()
+    val middle = values.size / 2
+    return if (values.size % 2 == 0) {
+        (values[middle - 1] + values[middle]) / 2.0
+    } else {
+        values[middle]
+    }
+}
+
+private fun formatComparisonNumber(value: Double): String =
+    if (value % 1.0 == 0.0) {
+        value.toLong().toString()
+    } else {
+        String.format(Locale.JAPAN, "%.1f", value)
+    }
 
 private fun VitalMeasurement.toHealthConnectRecords(
     includeHeartRateWhenMissing: Boolean = true,
@@ -4559,10 +4834,13 @@ private val WEIGHT_WRITE_REQUIRED_PERMISSIONS = setOf(
 )
 private val MANUAL_VITAL_REQUIRED_PERMISSIONS = setOf(
     HealthPermission.getWritePermission(BloodPressureRecord::class),
-    HealthPermission.getWritePermission(HeartRateRecord::class)
+    HealthPermission.getReadPermission(BloodPressureRecord::class),
+    HealthPermission.getWritePermission(HeartRateRecord::class),
+    HealthPermission.getReadPermission(HeartRateRecord::class)
 )
 private val MANUAL_WEIGHT_REQUIRED_PERMISSIONS = setOf(
-    HealthPermission.getWritePermission(WeightRecord::class)
+    HealthPermission.getWritePermission(WeightRecord::class),
+    HealthPermission.getReadPermission(WeightRecord::class)
 )
 
 private fun healthPermissionTargets(permissions: Set<String>): List<String> = buildList {
