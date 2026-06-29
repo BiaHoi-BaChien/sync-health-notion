@@ -94,4 +94,35 @@ class VitalMeasurementPairingTest {
         assertEquals(false, source.hasSameVitalValues(source.copy(heartRate = 71L)))
         assertEquals(false, source.hasSameVitalValues(source.copy(heartRate = null)))
     }
+
+    @Test
+    fun warnsWhenManualVitalBloodPressureIsReversed() {
+        val warnings = vitalInputWarnings(
+            measurement = VitalMeasurement(Instant.parse("2026-06-13T01:02:03Z"), 80.0, 120.0, 70L),
+            recentMeasurements = emptyList()
+        )
+
+        assertEquals(listOf("最高血圧が最低血圧以下です。"), warnings)
+    }
+
+    @Test
+    fun warnsWhenManualVitalDiffersFromRecentMedian() {
+        val warnings = vitalInputWarnings(
+            measurement = VitalMeasurement(Instant.parse("2026-06-13T01:02:03Z"), 165.0, 110.0, 115L),
+            recentMeasurements = listOf(
+                VitalMeasurement(Instant.parse("2026-06-10T01:02:03Z"), 120.0, 80.0, 70L),
+                VitalMeasurement(Instant.parse("2026-06-11T01:02:03Z"), 122.0, 82.0, 72L),
+                VitalMeasurement(Instant.parse("2026-06-12T01:02:03Z"), 124.0, 84.0, 74L)
+            )
+        )
+
+        assertEquals(
+            listOf(
+                "最高血圧が最近の中央値122と大きく異なります。",
+                "最低血圧が最近の中央値82と大きく異なります。",
+                "脈拍が最近の中央値72と大きく異なります。"
+            ),
+            warnings
+        )
+    }
 }
