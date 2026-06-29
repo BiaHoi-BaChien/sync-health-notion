@@ -882,8 +882,8 @@ class MainActivity : ComponentActivity() {
             setPadding((16 * density).toInt(), (14 * density).toInt(), (16 * density).toInt(), (14 * density).toInt())
             background = GradientDrawable().apply {
                 cornerRadius = 14 * density
-                setColor(Color.parseColor("#25301F"))
-                setStroke((1 * density).toInt(), Color.parseColor("#6BAA3A"))
+                setColor(palette.successBackground)
+                setStroke((1 * density).toInt(), palette.successBorder)
             }
             layoutParams = ViewGroup.MarginLayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -910,7 +910,7 @@ class MainActivity : ComponentActivity() {
             setTextColor(palette.onAccent)
             background = GradientDrawable().apply {
                 cornerRadius = 10 * density
-                setColor(Color.parseColor("#A6E05A"))
+                setColor(palette.successButtonBackground)
             }
             layoutParams = ViewGroup.MarginLayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -973,11 +973,11 @@ class MainActivity : ComponentActivity() {
             contentDescription = "最終失敗と失敗理由を削除"
             tooltipText = "最終失敗と失敗理由を削除"
             setImageResource(R.drawable.ic_trash)
-            imageTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#FFB4A8"))
+            imageTintList = android.content.res.ColorStateList.valueOf(palette.dangerText)
             background = GradientDrawable().apply {
                 cornerRadius = 10 * density
-                setColor(Color.parseColor("#2A1C1D"))
-                setStroke((1 * density).toInt(), Color.parseColor("#6D3B3B"))
+                setColor(palette.dangerBackground)
+                setStroke((1 * density).toInt(), palette.dangerBorder)
             }
             scaleType = android.widget.ImageView.ScaleType.CENTER
             layoutParams = LinearLayout.LayoutParams((40 * density).toInt(), (40 * density).toInt()).apply {
@@ -1260,11 +1260,25 @@ class MainActivity : ComponentActivity() {
         val density = resources.displayMetrics.density
         val palette = uiPalette()
         return Spinner(this).apply {
-            adapter = ArrayAdapter(
+            adapter = object : ArrayAdapter<String>(
                 context,
-                android.R.layout.simple_spinner_dropdown_item,
+                android.R.layout.simple_spinner_item,
                 labels
-            )
+            ) {
+                override fun getView(position: Int, convertView: View?, parent: ViewGroup): View =
+                    super.getView(position, convertView, parent).apply {
+                        (this as? TextView)?.setTextColor(palette.primaryText)
+                        setBackgroundColor(palette.spinnerBackground)
+                    }
+
+                override fun getDropDownView(position: Int, convertView: View?, parent: ViewGroup): View =
+                    super.getDropDownView(position, convertView, parent).apply {
+                        (this as? TextView)?.setTextColor(palette.primaryText)
+                        setBackgroundColor(palette.controlBackground)
+                    }
+            }.apply {
+                setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+            }
             background = GradientDrawable().apply {
                 cornerRadius = 8 * density
                 setColor(palette.spinnerBackground)
@@ -1467,6 +1481,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun refreshAutoSyncStatus() {
+        val palette = uiPalette()
         val autoSyncTime = loadAutoSyncTime()
         val status = loadAutoSyncStatus(this)
         autoSyncResultText.text = status.topResultLabel()
@@ -1478,7 +1493,7 @@ class MainActivity : ComponentActivity() {
         )
         autoSyncResultText.compoundDrawablePadding = (8 * resources.displayMetrics.density).toInt()
         autoSyncResultText.compoundDrawableTintList =
-            android.content.res.ColorStateList.valueOf(Color.parseColor("#44D7B6"))
+            android.content.res.ColorStateList.valueOf(palette.accent)
         autoSyncLastSuccessText.text = displayTimestampMillis(status.lastSuccessAtMillis)
         autoSyncLastFailureText.text = displayTimestampMillis(status.lastFailureAtMillis)
         autoSyncFailureReasonText.text = status.failureReason.takeIf { it.isNotBlank() } ?: "なし"
@@ -1514,6 +1529,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun updateAutoSyncDetailsToggleButton() {
+        val palette = uiPalette()
         val description = if (autoSyncDetailsExpanded) "詳細を閉じる" else "詳細を表示"
         autoSyncDetailsToggleButton.text = description
         autoSyncDetailsToggleButton.contentDescription = description
@@ -1525,7 +1541,7 @@ class MainActivity : ComponentActivity() {
         )
         autoSyncDetailsToggleButton.compoundDrawablePadding = (8 * resources.displayMetrics.density).toInt()
         autoSyncDetailsToggleButton.compoundDrawableTintList =
-            android.content.res.ColorStateList.valueOf(Color.parseColor("#D9E3EA"))
+            android.content.res.ColorStateList.valueOf(palette.secondaryText)
     }
 
     private fun clearAutoSyncFailureDetails(context: Context) {
@@ -1669,6 +1685,7 @@ class MainActivity : ComponentActivity() {
         }
 
         val density = resources.displayMetrics.density
+        val palette = uiPalette()
         lateinit var dialog: Dialog
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -1680,8 +1697,8 @@ class MainActivity : ComponentActivity() {
             )
             background = GradientDrawable().apply {
                 cornerRadius = 14 * density
-                setColor(Color.parseColor("#17232D"))
-                setStroke((1 * density).toInt(), Color.parseColor("#44D7B6"))
+                setColor(palette.dialogBackground)
+                setStroke((1 * density).toInt(), palette.accent)
             }
             layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -1703,17 +1720,17 @@ class MainActivity : ComponentActivity() {
         titleRow.addView(TextView(this).apply {
             text = "体重をHealth Connectに登録"
             textSize = 20f
-            setTextColor(Color.WHITE)
+            setTextColor(palette.primaryText)
             typeface = Typeface.DEFAULT_BOLD
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         })
         val micButton = ImageButton(this).apply {
             contentDescription = "音声で体重を入力"
             setImageResource(R.drawable.ic_mic)
-            setColorFilter(Color.parseColor("#081018"))
+            setColorFilter(palette.onAccent)
             background = GradientDrawable().apply {
                 cornerRadius = 10 * density
-                setColor(Color.parseColor("#44D7B6"))
+                setColor(palette.accent)
             }
             layoutParams = LinearLayout.LayoutParams((44 * density).toInt(), (44 * density).toInt()).apply {
                 leftMargin = (12 * density).toInt()
@@ -1724,7 +1741,7 @@ class MainActivity : ComponentActivity() {
         panel.addView(TextView(this).apply {
             text = "測定日時は登録時点の時刻で保存します。体重はkg単位で小数第1位まで入力できます。"
             textSize = 13f
-            setTextColor(Color.parseColor("#AAB7C4"))
+            setTextColor(palette.mutedText)
             setPadding(0, (6 * density).toInt(), 0, (4 * density).toInt())
         })
 
@@ -1746,11 +1763,11 @@ class MainActivity : ComponentActivity() {
         buttons.addView(Button(this).apply {
             text = "キャンセル"
             typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.parseColor("#DDE7EF"))
+            setTextColor(palette.secondaryText)
             background = GradientDrawable().apply {
                 cornerRadius = 10 * density
-                setColor(Color.parseColor("#22313B"))
-                setStroke((1 * density).toInt(), Color.parseColor("#44D7B6"))
+                setColor(palette.secondaryButtonBackground)
+                setStroke((1 * density).toInt(), palette.accent)
             }
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
                 rightMargin = (8 * density).toInt()
@@ -1760,10 +1777,10 @@ class MainActivity : ComponentActivity() {
         buttons.addView(Button(this).apply {
             text = "Health Connectに登録"
             typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.parseColor("#081018"))
+            setTextColor(palette.onAccent)
             background = GradientDrawable().apply {
                 cornerRadius = 10 * density
-                setColor(Color.parseColor("#44D7B6"))
+                setColor(palette.accent)
             }
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
                 leftMargin = (8 * density).toInt()
@@ -1816,6 +1833,7 @@ class MainActivity : ComponentActivity() {
         }
 
         val density = resources.displayMetrics.density
+        val palette = uiPalette()
         lateinit var dialog: Dialog
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -1827,8 +1845,8 @@ class MainActivity : ComponentActivity() {
             )
             background = GradientDrawable().apply {
                 cornerRadius = 14 * density
-                setColor(Color.parseColor("#17232D"))
-                setStroke((1 * density).toInt(), Color.parseColor("#44D7B6"))
+                setColor(palette.dialogBackground)
+                setStroke((1 * density).toInt(), palette.accent)
             }
             layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -1850,17 +1868,17 @@ class MainActivity : ComponentActivity() {
         titleRow.addView(TextView(this).apply {
             text = "バイタルをHealth Connectに登録"
             textSize = 20f
-            setTextColor(Color.WHITE)
+            setTextColor(palette.primaryText)
             typeface = Typeface.DEFAULT_BOLD
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         })
         val micButton = ImageButton(this).apply {
             contentDescription = "音声でバイタルを入力"
             setImageResource(R.drawable.ic_mic)
-            setColorFilter(Color.parseColor("#081018"))
+            setColorFilter(palette.onAccent)
             background = GradientDrawable().apply {
                 cornerRadius = 10 * density
-                setColor(Color.parseColor("#44D7B6"))
+                setColor(palette.accent)
             }
             layoutParams = LinearLayout.LayoutParams((44 * density).toInt(), (44 * density).toInt()).apply {
                 leftMargin = (12 * density).toInt()
@@ -1871,7 +1889,7 @@ class MainActivity : ComponentActivity() {
         panel.addView(TextView(this).apply {
             text = "測定日時は登録時点の時刻で保存します。"
             textSize = 13f
-            setTextColor(Color.parseColor("#AAB7C4"))
+            setTextColor(palette.mutedText)
             setPadding(0, (6 * density).toInt(), 0, (4 * density).toInt())
         })
 
@@ -1901,11 +1919,11 @@ class MainActivity : ComponentActivity() {
         buttons.addView(Button(this).apply {
             text = "キャンセル"
             typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.parseColor("#DDE7EF"))
+            setTextColor(palette.secondaryText)
             background = GradientDrawable().apply {
                 cornerRadius = 10 * density
-                setColor(Color.parseColor("#22313B"))
-                setStroke((1 * density).toInt(), Color.parseColor("#44D7B6"))
+                setColor(palette.secondaryButtonBackground)
+                setStroke((1 * density).toInt(), palette.accent)
             }
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
                 rightMargin = (8 * density).toInt()
@@ -1915,10 +1933,10 @@ class MainActivity : ComponentActivity() {
         buttons.addView(Button(this).apply {
             text = "Health Connectに登録"
             typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.parseColor("#081018"))
+            setTextColor(palette.onAccent)
             background = GradientDrawable().apply {
                 cornerRadius = 10 * density
-                setColor(Color.parseColor("#44D7B6"))
+                setColor(palette.accent)
             }
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
                 leftMargin = (8 * density).toInt()
@@ -2340,10 +2358,11 @@ class MainActivity : ComponentActivity() {
 
     private fun showSyncDialog(message: String) {
         val density = resources.displayMetrics.density
+        val palette = uiPalette()
         val dialogMessage = TextView(this).apply {
             text = message
             textSize = 20f
-            setTextColor(Color.WHITE)
+            setTextColor(palette.primaryText)
             typeface = Typeface.DEFAULT_BOLD
         }
         syncDialogMessageText = dialogMessage
@@ -2358,8 +2377,8 @@ class MainActivity : ComponentActivity() {
             )
             background = GradientDrawable().apply {
                 cornerRadius = 14 * density
-                setColor(Color.parseColor("#17232D"))
-                setStroke((1 * density).toInt(), Color.parseColor("#44D7B6"))
+                setColor(palette.dialogBackground)
+                setStroke((1 * density).toInt(), palette.accent)
             }
             layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -2373,7 +2392,7 @@ class MainActivity : ComponentActivity() {
         panel.addView(dialogMessage)
         panel.addView(ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             isIndeterminate = true
-            indeterminateTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#44D7B6"))
+            indeterminateTintList = android.content.res.ColorStateList.valueOf(palette.accent)
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 (6 * density).toInt()
@@ -2384,10 +2403,10 @@ class MainActivity : ComponentActivity() {
         panel.addView(Button(this).apply {
             text = "同期を中止"
             typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.WHITE)
+            setTextColor(palette.dangerButtonText)
             background = GradientDrawable().apply {
                 cornerRadius = 10 * density
-                setColor(Color.parseColor("#B93845"))
+                setColor(palette.dangerButtonBackground)
             }
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -2423,6 +2442,7 @@ class MainActivity : ComponentActivity() {
         latestDateRefreshDialog?.dismiss()
 
         val density = resources.displayMetrics.density
+        val palette = uiPalette()
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(
@@ -2433,8 +2453,8 @@ class MainActivity : ComponentActivity() {
             )
             background = GradientDrawable().apply {
                 cornerRadius = 14 * density
-                setColor(Color.parseColor("#17232D"))
-                setStroke((1 * density).toInt(), Color.parseColor("#44D7B6"))
+                setColor(palette.dialogBackground)
+                setStroke((1 * density).toInt(), palette.accent)
             }
             layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -2448,12 +2468,12 @@ class MainActivity : ComponentActivity() {
         panel.addView(TextView(this).apply {
             text = "最新日付を更新中"
             textSize = 20f
-            setTextColor(Color.WHITE)
+            setTextColor(palette.primaryText)
             typeface = Typeface.DEFAULT_BOLD
         })
         panel.addView(ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             isIndeterminate = true
-            indeterminateTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#44D7B6"))
+            indeterminateTintList = android.content.res.ColorStateList.valueOf(palette.accent)
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 (6 * density).toInt()
@@ -2483,6 +2503,7 @@ class MainActivity : ComponentActivity() {
         messageDialog?.dismiss()
 
         val density = resources.displayMetrics.density
+        val palette = uiPalette()
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(
@@ -2493,8 +2514,8 @@ class MainActivity : ComponentActivity() {
             )
             background = GradientDrawable().apply {
                 cornerRadius = 14 * density
-                setColor(Color.parseColor("#17232D"))
-                setStroke((1 * density).toInt(), Color.parseColor("#44D7B6"))
+                setColor(palette.dialogBackground)
+                setStroke((1 * density).toInt(), palette.accent)
             }
             layoutParams = FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -2508,7 +2529,7 @@ class MainActivity : ComponentActivity() {
         panel.addView(TextView(this).apply {
             text = message
             textSize = 20f
-            setTextColor(Color.WHITE)
+            setTextColor(palette.primaryText)
             typeface = Typeface.DEFAULT_BOLD
         })
 
@@ -2547,6 +2568,7 @@ class MainActivity : ComponentActivity() {
             messageDialog?.dismiss()
 
             val density = resources.displayMetrics.density
+            val palette = uiPalette()
             lateinit var dialog: Dialog
             val panel = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
@@ -2558,8 +2580,8 @@ class MainActivity : ComponentActivity() {
                 )
                 background = GradientDrawable().apply {
                     cornerRadius = 14 * density
-                    setColor(Color.parseColor("#17232D"))
-                    setStroke((1 * density).toInt(), Color.parseColor("#44D7B6"))
+                    setColor(palette.dialogBackground)
+                    setStroke((1 * density).toInt(), palette.accent)
                 }
                 layoutParams = FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
@@ -2575,7 +2597,7 @@ class MainActivity : ComponentActivity() {
             panel.addView(TextView(this).apply {
                 text = "歩数データ同期デバッグ"
                 textSize = 20f
-                setTextColor(Color.WHITE)
+                setTextColor(palette.primaryText)
                 typeface = Typeface.DEFAULT_BOLD
             })
             panel.addView(ScrollView(this).apply {
@@ -2592,13 +2614,13 @@ class MainActivity : ComponentActivity() {
                     addView(TextView(this@MainActivity).apply {
                         text = result.toDebugSummaryText()
                         textSize = 15f
-                        setTextColor(Color.parseColor("#D9E3EA"))
+                        setTextColor(palette.secondaryText)
                         setLineSpacing(0f, 1.12f)
                     })
                     val detailsText = TextView(this@MainActivity).apply {
                         text = result.toDebugDetailsText()
                         textSize = 15f
-                        setTextColor(Color.parseColor("#D9E3EA"))
+                        setTextColor(palette.secondaryText)
                         setLineSpacing(0f, 1.12f)
                         visibility = View.GONE
                     }
@@ -2606,10 +2628,10 @@ class MainActivity : ComponentActivity() {
                         text = ""
                         contentDescription = "詳細を表示"
                         setCompoundDrawablesWithIntrinsicBounds(0, R.drawable.ic_expand_window_down, 0, 0)
-                        compoundDrawableTintList = android.content.res.ColorStateList.valueOf(Color.parseColor("#D9E3EA"))
+                        compoundDrawableTintList = android.content.res.ColorStateList.valueOf(palette.secondaryText)
                         background = GradientDrawable().apply {
                             cornerRadius = 10 * density
-                            setColor(Color.parseColor("#22313C"))
+                            setColor(palette.secondaryButtonBackground)
                         }
                         layoutParams = LinearLayout.LayoutParams(
                             ViewGroup.LayoutParams.MATCH_PARENT,
@@ -2640,6 +2662,12 @@ class MainActivity : ComponentActivity() {
             }
             buttons.addView(Button(this).apply {
                 text = "終了"
+                setTextColor(palette.secondaryText)
+                background = GradientDrawable().apply {
+                    cornerRadius = 10 * density
+                    setColor(palette.secondaryButtonBackground)
+                    setStroke((1 * density).toInt(), palette.border)
+                }
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
                     rightMargin = (8 * density).toInt()
                 }
@@ -2653,6 +2681,11 @@ class MainActivity : ComponentActivity() {
             buttons.addView(Button(this).apply {
                 text = "再開"
                 typeface = Typeface.DEFAULT_BOLD
+                setTextColor(palette.onAccent)
+                background = GradientDrawable().apply {
+                    cornerRadius = 10 * density
+                    setColor(palette.accent)
+                }
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
                     leftMargin = (8 * density).toInt()
                 }
@@ -2704,6 +2737,7 @@ class MainActivity : ComponentActivity() {
             messageDialog?.dismiss()
 
             val density = resources.displayMetrics.density
+            val palette = uiPalette()
             lateinit var dialog: Dialog
             val panel = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
@@ -2715,8 +2749,8 @@ class MainActivity : ComponentActivity() {
                 )
                 background = GradientDrawable().apply {
                     cornerRadius = 14 * density
-                    setColor(Color.parseColor("#17232D"))
-                    setStroke((1 * density).toInt(), Color.parseColor("#F5C542"))
+                    setColor(palette.dialogBackground)
+                    setStroke((1 * density).toInt(), palette.warningBorder)
                 }
                 layoutParams = FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
@@ -2730,7 +2764,7 @@ class MainActivity : ComponentActivity() {
             panel.addView(TextView(this).apply {
                 text = title
                 textSize = 20f
-                setTextColor(Color.WHITE)
+                setTextColor(palette.primaryText)
                 typeface = Typeface.DEFAULT_BOLD
             })
             panel.addView(TextView(this).apply {
@@ -2745,7 +2779,7 @@ class MainActivity : ComponentActivity() {
                     }
                 }.trimEnd()
                 textSize = 15f
-                setTextColor(Color.parseColor("#D9E3EA"))
+                setTextColor(palette.secondaryText)
                 setLineSpacing(0f, 1.12f)
                 setPadding(0, (12 * density).toInt(), 0, 0)
             })
@@ -2762,6 +2796,12 @@ class MainActivity : ComponentActivity() {
             }
             buttons.addView(Button(this).apply {
                 text = "修正する"
+                setTextColor(palette.secondaryText)
+                background = GradientDrawable().apply {
+                    cornerRadius = 10 * density
+                    setColor(palette.secondaryButtonBackground)
+                    setStroke((1 * density).toInt(), palette.border)
+                }
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
                     rightMargin = (8 * density).toInt()
                 }
@@ -2775,6 +2815,11 @@ class MainActivity : ComponentActivity() {
             buttons.addView(Button(this).apply {
                 text = continueText
                 typeface = Typeface.DEFAULT_BOLD
+                setTextColor(palette.onAccent)
+                background = GradientDrawable().apply {
+                    cornerRadius = 10 * density
+                    setColor(palette.accent)
+                }
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
                     leftMargin = (8 * density).toInt()
                 }
@@ -3268,7 +3313,17 @@ private data class UiPalette(
     val infoText: Int,
     val border: Int,
     val accent: Int,
-    val onAccent: Int
+    val onAccent: Int,
+    val dialogBackground: Int,
+    val successBackground: Int,
+    val successBorder: Int,
+    val successButtonBackground: Int,
+    val dangerText: Int,
+    val dangerBackground: Int,
+    val dangerBorder: Int,
+    val dangerButtonBackground: Int,
+    val dangerButtonText: Int,
+    val warningBorder: Int
 ) {
     companion object {
         fun dark(): UiPalette = UiPalette(
@@ -3283,7 +3338,7 @@ private data class UiPalette(
             controlBackground = Color.parseColor("#172633"),
             inputBackground = Color.parseColor("#182630"),
             secondaryButtonBackground = Color.parseColor("#22313C"),
-            spinnerBackground = Color.parseColor("#F2F7FA"),
+            spinnerBackground = Color.parseColor("#182630"),
             primaryText = Color.WHITE,
             secondaryText = Color.parseColor("#D9E3EA"),
             mutedText = Color.parseColor("#AAB7C4"),
@@ -3292,7 +3347,17 @@ private data class UiPalette(
             infoText = Color.parseColor("#A9DDF5"),
             border = Color.parseColor("#38505E"),
             accent = Color.parseColor("#44D7B6"),
-            onAccent = Color.parseColor("#081018")
+            onAccent = Color.parseColor("#081018"),
+            dialogBackground = Color.parseColor("#17232D"),
+            successBackground = Color.parseColor("#25301F"),
+            successBorder = Color.parseColor("#6BAA3A"),
+            successButtonBackground = Color.parseColor("#A6E05A"),
+            dangerText = Color.parseColor("#FFB4A8"),
+            dangerBackground = Color.parseColor("#2A1C1D"),
+            dangerBorder = Color.parseColor("#6D3B3B"),
+            dangerButtonBackground = Color.parseColor("#B93845"),
+            dangerButtonText = Color.WHITE,
+            warningBorder = Color.parseColor("#F5C542")
         )
 
         fun light(): UiPalette = UiPalette(
@@ -3316,7 +3381,17 @@ private data class UiPalette(
             infoText = Color.parseColor("#0B6E8F"),
             border = Color.parseColor("#C8D6DC"),
             accent = Color.parseColor("#0D8F78"),
-            onAccent = Color.WHITE
+            onAccent = Color.WHITE,
+            dialogBackground = Color.WHITE,
+            successBackground = Color.parseColor("#EAF7ED"),
+            successBorder = Color.parseColor("#6AAE63"),
+            successButtonBackground = Color.parseColor("#0D8F78"),
+            dangerText = Color.parseColor("#B93845"),
+            dangerBackground = Color.parseColor("#FFF0F1"),
+            dangerBorder = Color.parseColor("#E0A4AA"),
+            dangerButtonBackground = Color.parseColor("#B93845"),
+            dangerButtonText = Color.WHITE,
+            warningBorder = Color.parseColor("#B98900")
         )
     }
 }
