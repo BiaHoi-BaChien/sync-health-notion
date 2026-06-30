@@ -149,7 +149,6 @@ class MainActivity : ComponentActivity() {
     private var manualVitalVoiceInputs: ManualVitalVoiceInputs? = null
     private var manualWeightVoiceInput: EditText? = null
     private var manualVoiceTarget: ManualVoiceTarget? = null
-    private val lookbackDays = DEFAULT_LOOKBACK_DAYS
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -286,8 +285,6 @@ class MainActivity : ComponentActivity() {
         }
         root.addSummaryCard(
             title = "自動同期",
-            direction = null,
-            iconResId = R.drawable.ic_auto_sync,
             actionLabel = "手動同期",
             actionDescription = "設定済みの歩数、バイタル、体重を手動同期",
             action = { syncAllToNotion() }
@@ -464,17 +461,17 @@ class MainActivity : ComponentActivity() {
         tabContent.addView(weightTab)
 
         val tabs = listOf(
-            SettingsTab("歩数", stepsTab),
-            SettingsTab("バイタル", vitalsTab),
-            SettingsTab("体重", weightTab)
+            "歩数" to stepsTab,
+            "バイタル" to vitalsTab,
+            "体重" to weightTab
         )
         tabs.forEachIndexed { index, tab ->
-            tabButtons.addView(createSettingsTabButton(tab.label).apply {
+            tabButtons.addView(createSettingsTabButton(tab.first).apply {
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
                     if (index > 0) leftMargin = (6 * density).toInt()
                 }
                 setOnClickListener {
-                    tabs.forEach { item -> item.content.visibility = if (item === tab) View.VISIBLE else View.GONE }
+                    tabs.forEach { item -> item.second.visibility = if (item === tab) View.VISIBLE else View.GONE }
                     updateSettingsTabButtons(tabButtons, index)
                 }
             })
@@ -765,12 +762,9 @@ class MainActivity : ComponentActivity() {
 
     private fun LinearLayout.addSummaryCard(
         title: String,
-        direction: String?,
-        iconResId: Int? = null,
-        actionLabel: String? = null,
-        actionDescription: String? = null,
-        actionIconResId: Int? = null,
-        action: (() -> Unit)? = null
+        actionLabel: String,
+        actionDescription: String,
+        action: () -> Unit
     ): LinearLayout {
         val density = resources.displayMetrics.density
         val palette = uiPalette()
@@ -789,15 +783,6 @@ class MainActivity : ComponentActivity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        if (iconResId != null) {
-            header.addView(ImageView(context).apply {
-                setImageResource(iconResId)
-                imageTintList = android.content.res.ColorStateList.valueOf(palette.accent)
-                layoutParams = LinearLayout.LayoutParams((28 * density).toInt(), (28 * density).toInt()).apply {
-                    rightMargin = (10 * density).toInt()
-                }
-            })
-        }
         header.addView(TextView(context).apply {
             text = title
             textSize = 18f
@@ -805,20 +790,8 @@ class MainActivity : ComponentActivity() {
             typeface = Typeface.DEFAULT_BOLD
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         })
-        if (actionLabel != null && actionDescription != null && action != null) {
-            header.addView(createCardTextButton(actionLabel, actionDescription, action))
-        } else if (actionDescription != null && actionIconResId != null && action != null) {
-            header.addView(createCardIconButton(actionDescription, actionIconResId, action))
-        }
+        header.addView(createCardTextButton(actionLabel, actionDescription, action))
         card.addView(header)
-        direction?.let {
-            card.addView(TextView(context).apply {
-                text = it
-                textSize = 13f
-                setTextColor(palette.infoText)
-                setPadding(0, (4 * density).toInt(), 0, 0)
-            })
-        }
         addView(card)
         return card
     }
@@ -1168,7 +1141,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun LinearLayout.addButton(label: String, onClick: () -> Unit): Button {
-        val button = createActionButton(label, null, onClick)
+        val button = createActionButton(label, onClick)
         addView(button)
         return button
     }
@@ -1197,7 +1170,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun createActionButton(label: String, iconResId: Int?, onClick: () -> Unit): Button {
+    private fun createActionButton(label: String, onClick: () -> Unit): Button {
         val density = resources.displayMetrics.density
         val palette = uiPalette()
         val cornerRadius = 10 * density
@@ -1227,11 +1200,6 @@ class MainActivity : ComponentActivity() {
                 ViewGroup.LayoutParams.WRAP_CONTENT
             ).apply {
                 topMargin = (10 * density).toInt()
-            }
-            if (iconResId != null) {
-                setCompoundDrawablesWithIntrinsicBounds(iconResId, 0, 0, 0)
-                compoundDrawablePadding = (8 * density).toInt()
-                compoundDrawableTintList = android.content.res.ColorStateList.valueOf(palette.onAccent)
             }
             setOnClickListener { onClick() }
         }
@@ -1431,13 +1399,13 @@ class MainActivity : ComponentActivity() {
 
                 withContext(Dispatchers.IO) {
                     val stepsDate = runCatching {
-                        if (config.hasStepsSettings()) NotionClient(config).latestStepsDate(lookbackDays) else null
+                        if (config.hasStepsSettings()) NotionClient(config).latestStepsDate(DEFAULT_LOOKBACK_DAYS) else null
                     }.getOrNull()
                     val vitalsDate = runCatching {
-                        if (config.hasVitalsSettings()) NotionClient(config).latestVitalsDate(lookbackDays) else null
+                        if (config.hasVitalsSettings()) NotionClient(config).latestVitalsDate(DEFAULT_LOOKBACK_DAYS) else null
                     }.getOrNull()
                     val weightDate = runCatching {
-                        if (config.hasWeightSettings()) NotionClient(config).latestWeightDate(lookbackDays) else null
+                        if (config.hasWeightSettings()) NotionClient(config).latestWeightDate(DEFAULT_LOOKBACK_DAYS) else null
                     }.getOrNull()
                     withContext(Dispatchers.Main) {
                         stepsNotionDateText.text = if (config.hasStepsSettings()) displayNotionDateTime(stepsDate) else "設定未完了"
@@ -1551,7 +1519,7 @@ class MainActivity : ComponentActivity() {
             requiredHealthPermissions = config.stepsDirection.stepsPermissions(),
             permissionTarget = "歩数"
         ) { client ->
-            val synced = HealthNotionSyncEngine.syncSteps(client, config, lookbackDays)
+            val synced = HealthNotionSyncEngine.syncSteps(client, config, DEFAULT_LOOKBACK_DAYS)
             syncCountMessage("歩数データ", synced)
         }
     }
@@ -1575,7 +1543,7 @@ class MainActivity : ComponentActivity() {
                 val client = checkedHealthClient() ?: return@launch
                 val notion = withContext(Dispatchers.IO) { NotionClient(config) }
                 val existingPages = withContext(Dispatchers.IO) {
-                    notion.readStepPagesByDate(lookbackDays).toMutableMap()
+                    notion.readStepPagesByDate(DEFAULT_LOOKBACK_DAYS).toMutableMap()
                 }
                 val measurements = withContext(Dispatchers.IO) {
                     readDailyStepDebugMeasurements(client)
@@ -1635,7 +1603,7 @@ class MainActivity : ComponentActivity() {
             requiredHealthPermissions = config.vitalsDirection.vitalsPermissions(),
             permissionTarget = "バイタル"
         ) { client ->
-            val synced = HealthNotionSyncEngine.syncVitals(client, config, lookbackDays)
+            val synced = HealthNotionSyncEngine.syncVitals(client, config, DEFAULT_LOOKBACK_DAYS)
             syncCountMessage("血圧・心拍データ", synced)
         }
     }
@@ -1657,8 +1625,134 @@ class MainActivity : ComponentActivity() {
             requiredHealthPermissions = config.weightDirection.weightPermissions(),
             permissionTarget = "体重"
         ) { client ->
-            val synced = HealthNotionSyncEngine.syncWeight(client, config, lookbackDays)
+            val synced = HealthNotionSyncEngine.syncWeight(client, config, DEFAULT_LOOKBACK_DAYS)
             syncCountMessage("体重データ", synced)
+        }
+    }
+
+    private fun showManualEntryDialog(
+        title: String,
+        description: String,
+        voiceDescription: String,
+        content: LinearLayout.(ImageButton) -> Unit,
+        onRegister: (Dialog) -> Unit,
+        onDismiss: () -> Unit
+    ) {
+        val density = resources.displayMetrics.density
+        lateinit var dialog: Dialog
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(
+                (20 * density).toInt(),
+                (20 * density).toInt(),
+                (20 * density).toInt(),
+                (18 * density).toInt()
+            )
+            background = GradientDrawable().apply {
+                cornerRadius = 14 * density
+                setColor(Color.parseColor("#17232D"))
+                setStroke((1 * density).toInt(), Color.parseColor("#44D7B6"))
+            }
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER
+            ).apply {
+                leftMargin = (24 * density).toInt()
+                rightMargin = (24 * density).toInt()
+            }
+        }
+        val titleRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        }
+        titleRow.addView(TextView(this).apply {
+            text = title
+            textSize = 20f
+            setTextColor(Color.WHITE)
+            typeface = Typeface.DEFAULT_BOLD
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        val micButton = ImageButton(this).apply {
+            contentDescription = voiceDescription
+            setImageResource(R.drawable.ic_mic)
+            setColorFilter(Color.parseColor("#081018"))
+            background = GradientDrawable().apply {
+                cornerRadius = 10 * density
+                setColor(Color.parseColor("#44D7B6"))
+            }
+            layoutParams = LinearLayout.LayoutParams((44 * density).toInt(), (44 * density).toInt()).apply {
+                leftMargin = (12 * density).toInt()
+            }
+        }
+        titleRow.addView(micButton)
+        panel.addView(titleRow)
+        panel.addView(TextView(this).apply {
+            text = description
+            textSize = 13f
+            setTextColor(Color.parseColor("#AAB7C4"))
+            setPadding(0, (6 * density).toInt(), 0, (4 * density).toInt())
+        })
+        panel.content(micButton)
+
+        val buttons = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = (16 * density).toInt()
+            }
+        }
+        buttons.addView(Button(this).apply {
+            text = "キャンセル"
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor("#DDE7EF"))
+            background = GradientDrawable().apply {
+                cornerRadius = 10 * density
+                setColor(Color.parseColor("#22313B"))
+                setStroke((1 * density).toInt(), Color.parseColor("#44D7B6"))
+            }
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                rightMargin = (8 * density).toInt()
+            }
+            setOnClickListener { dialog.dismiss() }
+        })
+        buttons.addView(Button(this).apply {
+            text = "Health Connectに登録"
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor("#081018"))
+            background = GradientDrawable().apply {
+                cornerRadius = 10 * density
+                setColor(Color.parseColor("#44D7B6"))
+            }
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                leftMargin = (8 * density).toInt()
+            }
+            setOnClickListener { onRegister(dialog) }
+        })
+        panel.addView(buttons)
+
+        dialog = Dialog(this).apply {
+            requestWindowFeature(Window.FEATURE_NO_TITLE)
+            setCancelable(true)
+            setCanceledOnTouchOutside(true)
+            setContentView(FrameLayout(this@MainActivity).apply {
+                addView(panel)
+            })
+            window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            window?.setDimAmount(0.64f)
+            setOnDismissListener { onDismiss() }
+            show()
+            window?.setLayout(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
         }
     }
 
@@ -1668,107 +1762,18 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        val density = resources.displayMetrics.density
-        lateinit var dialog: Dialog
-        val panel = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(
-                (20 * density).toInt(),
-                (20 * density).toInt(),
-                (20 * density).toInt(),
-                (18 * density).toInt()
-            )
-            background = GradientDrawable().apply {
-                cornerRadius = 14 * density
-                setColor(Color.parseColor("#17232D"))
-                setStroke((1 * density).toInt(), Color.parseColor("#44D7B6"))
-            }
-            layoutParams = FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.CENTER
-            ).apply {
-                leftMargin = (24 * density).toInt()
-                rightMargin = (24 * density).toInt()
-            }
-        }
-        val titleRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            )
-        }
-        titleRow.addView(TextView(this).apply {
-            text = "体重をHealth Connectに登録"
-            textSize = 20f
-            setTextColor(Color.WHITE)
-            typeface = Typeface.DEFAULT_BOLD
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        })
-        val micButton = ImageButton(this).apply {
-            contentDescription = "音声で体重を入力"
-            setImageResource(R.drawable.ic_mic)
-            setColorFilter(Color.parseColor("#081018"))
-            background = GradientDrawable().apply {
-                cornerRadius = 10 * density
-                setColor(Color.parseColor("#44D7B6"))
-            }
-            layoutParams = LinearLayout.LayoutParams((44 * density).toInt(), (44 * density).toInt()).apply {
-                leftMargin = (12 * density).toInt()
-            }
-        }
-        titleRow.addView(micButton)
-        panel.addView(titleRow)
-        panel.addView(TextView(this).apply {
-            text = "測定日時は登録時点の時刻で保存します。体重はkg単位で小数第1位まで入力できます。"
-            textSize = 13f
-            setTextColor(Color.parseColor("#AAB7C4"))
-            setPadding(0, (6 * density).toInt(), 0, (4 * density).toInt())
-        })
-
-        val weightInput = panel.addNumberInput("体重 (kg)")
-        micButton.setOnClickListener {
-            startManualWeightVoiceInput(weightInput)
-        }
-
-        val buttons = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply {
-                topMargin = (16 * density).toInt()
-            }
-        }
-        buttons.addView(Button(this).apply {
-            text = "キャンセル"
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.parseColor("#DDE7EF"))
-            background = GradientDrawable().apply {
-                cornerRadius = 10 * density
-                setColor(Color.parseColor("#22313B"))
-                setStroke((1 * density).toInt(), Color.parseColor("#44D7B6"))
-            }
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                rightMargin = (8 * density).toInt()
-            }
-            setOnClickListener { dialog.dismiss() }
-        })
-        buttons.addView(Button(this).apply {
-            text = "Health Connectに登録"
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.parseColor("#081018"))
-            background = GradientDrawable().apply {
-                cornerRadius = 10 * density
-                setColor(Color.parseColor("#44D7B6"))
-            }
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                leftMargin = (8 * density).toInt()
-            }
-            setOnClickListener {
+        lateinit var weightInput: EditText
+        showManualEntryDialog(
+            title = "体重をHealth Connectに登録",
+            description = "測定日時は登録時点の時刻で保存します。体重はkg単位で小数第1位まで入力できます。",
+            voiceDescription = "音声で体重を入力",
+            content = { micButton ->
+                weightInput = addNumberInput("体重 (kg)")
+                micButton.setOnClickListener {
+                    startManualWeightVoiceInput(weightInput)
+                }
+            },
+            onRegister = { dialog ->
                 val measurement = runCatching {
                     WeightMeasurement(
                         measuredAt = Instant.now(),
@@ -1776,24 +1781,12 @@ class MainActivity : ComponentActivity() {
                     )
                 }.getOrElse { error ->
                     setStatusMessage(error.message ?: "入力値を確認してください。", floating = true)
-                    return@setOnClickListener
+                    return@showManualEntryDialog
                 }
                 dialog.dismiss()
                 confirmAndRegisterManualWeightToHealthConnect(measurement)
-            }
-        })
-        panel.addView(buttons)
-
-        dialog = Dialog(this).apply {
-            requestWindowFeature(Window.FEATURE_NO_TITLE)
-            setCancelable(true)
-            setCanceledOnTouchOutside(true)
-            setContentView(FrameLayout(this@MainActivity).apply {
-                addView(panel)
-            })
-            window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-            window?.setDimAmount(0.64f)
-            setOnDismissListener {
+            },
+            onDismiss = {
                 if (manualWeightVoiceInput === weightInput) {
                     manualWeightVoiceInput = null
                     if (manualVoiceTarget == ManualVoiceTarget.WEIGHT) {
@@ -1801,12 +1794,7 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
-            show()
-            window?.setLayout(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            )
-        }
+        )
     }
 
     private fun showManualVitalEntryDialog() {
@@ -1815,115 +1803,28 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        val density = resources.displayMetrics.density
-        lateinit var dialog: Dialog
-        val panel = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(
-                (20 * density).toInt(),
-                (20 * density).toInt(),
-                (20 * density).toInt(),
-                (18 * density).toInt()
-            )
-            background = GradientDrawable().apply {
-                cornerRadius = 14 * density
-                setColor(Color.parseColor("#17232D"))
-                setStroke((1 * density).toInt(), Color.parseColor("#44D7B6"))
-            }
-            layoutParams = FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.CENTER
-            ).apply {
-                leftMargin = (24 * density).toInt()
-                rightMargin = (24 * density).toInt()
-            }
-        }
-        val titleRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            )
-        }
-        titleRow.addView(TextView(this).apply {
-            text = "バイタルをHealth Connectに登録"
-            textSize = 20f
-            setTextColor(Color.WHITE)
-            typeface = Typeface.DEFAULT_BOLD
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-        })
-        val micButton = ImageButton(this).apply {
-            contentDescription = "音声でバイタルを入力"
-            setImageResource(R.drawable.ic_mic)
-            setColorFilter(Color.parseColor("#081018"))
-            background = GradientDrawable().apply {
-                cornerRadius = 10 * density
-                setColor(Color.parseColor("#44D7B6"))
-            }
-            layoutParams = LinearLayout.LayoutParams((44 * density).toInt(), (44 * density).toInt()).apply {
-                leftMargin = (12 * density).toInt()
-            }
-        }
-        titleRow.addView(micButton)
-        panel.addView(titleRow)
-        panel.addView(TextView(this).apply {
-            text = "測定日時は登録時点の時刻で保存します。"
-            textSize = 13f
-            setTextColor(Color.parseColor("#AAB7C4"))
-            setPadding(0, (6 * density).toInt(), 0, (4 * density).toInt())
-        })
-
-        val systolicInput = panel.addNumberInput("最高血圧")
-        val diastolicInput = panel.addNumberInput("最低血圧")
-        val heartRateInput = panel.addNumberInput("脈拍")
-        micButton.setOnClickListener {
-            startManualVitalVoiceInput(
-                ManualVitalVoiceInputs(
-                    systolic = systolicInput,
-                    diastolic = diastolicInput,
-                    heartRate = heartRateInput
-                )
-            )
-        }
-
-        val buttons = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply {
-                topMargin = (16 * density).toInt()
-            }
-        }
-        buttons.addView(Button(this).apply {
-            text = "キャンセル"
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.parseColor("#DDE7EF"))
-            background = GradientDrawable().apply {
-                cornerRadius = 10 * density
-                setColor(Color.parseColor("#22313B"))
-                setStroke((1 * density).toInt(), Color.parseColor("#44D7B6"))
-            }
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                rightMargin = (8 * density).toInt()
-            }
-            setOnClickListener { dialog.dismiss() }
-        })
-        buttons.addView(Button(this).apply {
-            text = "Health Connectに登録"
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.parseColor("#081018"))
-            background = GradientDrawable().apply {
-                cornerRadius = 10 * density
-                setColor(Color.parseColor("#44D7B6"))
-            }
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                leftMargin = (8 * density).toInt()
-            }
-            setOnClickListener {
+        lateinit var systolicInput: EditText
+        lateinit var diastolicInput: EditText
+        lateinit var heartRateInput: EditText
+        showManualEntryDialog(
+            title = "バイタルをHealth Connectに登録",
+            description = "測定日時は登録時点の時刻で保存します。",
+            voiceDescription = "音声でバイタルを入力",
+            content = { micButton ->
+                systolicInput = addNumberInput("最高血圧")
+                diastolicInput = addNumberInput("最低血圧")
+                heartRateInput = addNumberInput("脈拍")
+                micButton.setOnClickListener {
+                    startManualVitalVoiceInput(
+                        ManualVitalVoiceInputs(
+                            systolic = systolicInput,
+                            diastolic = diastolicInput,
+                            heartRate = heartRateInput
+                        )
+                    )
+                }
+            },
+            onRegister = { dialog ->
                 val measurement = runCatching {
                     VitalMeasurement(
                         measuredAt = Instant.now(),
@@ -1933,24 +1834,12 @@ class MainActivity : ComponentActivity() {
                     )
                 }.getOrElse { error ->
                     setStatusMessage(error.message ?: "入力値を確認してください。", floating = true)
-                    return@setOnClickListener
+                    return@showManualEntryDialog
                 }
                 dialog.dismiss()
                 confirmAndRegisterManualVitalToHealthConnect(measurement)
-            }
-        })
-        panel.addView(buttons)
-
-        dialog = Dialog(this).apply {
-            requestWindowFeature(Window.FEATURE_NO_TITLE)
-            setCancelable(true)
-            setCanceledOnTouchOutside(true)
-            setContentView(FrameLayout(this@MainActivity).apply {
-                addView(panel)
-            })
-            window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-            window?.setDimAmount(0.64f)
-            setOnDismissListener {
+            },
+            onDismiss = {
                 if (manualVitalVoiceInputs?.systolic === systolicInput) {
                     manualVitalVoiceInputs = null
                     if (manualVoiceTarget == ManualVoiceTarget.VITALS) {
@@ -1958,12 +1847,7 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
-            show()
-            window?.setLayout(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            )
-        }
+        )
     }
 
     private fun startManualVitalVoiceInput(inputs: ManualVitalVoiceInputs) {
@@ -2197,7 +2081,7 @@ class MainActivity : ComponentActivity() {
             try {
                 val client = checkedHealthClient(MANUAL_VITAL_REQUIRED_PERMISSIONS) ?: return@launch
                 val recentMeasurements = withContext(Dispatchers.IO) {
-                    HealthNotionSyncEngine.readVitalMeasurements(client, lookbackDays)
+                    HealthNotionSyncEngine.readVitalMeasurements(client, DEFAULT_LOOKBACK_DAYS)
                 }
                 val warnings = vitalInputWarnings(measurement, recentMeasurements)
                 dismissSyncDialog()
@@ -2249,7 +2133,7 @@ class MainActivity : ComponentActivity() {
             try {
                 val client = checkedHealthClient(MANUAL_WEIGHT_REQUIRED_PERMISSIONS) ?: return@launch
                 val recentMeasurements = withContext(Dispatchers.IO) {
-                    HealthNotionSyncEngine.readWeightMeasurements(client, lookbackDays)
+                    HealthNotionSyncEngine.readWeightMeasurements(client, DEFAULT_LOOKBACK_DAYS)
                 }
                 val warnings = weightInputWarnings(measurement, recentMeasurements)
                 dismissSyncDialog()
@@ -2303,7 +2187,7 @@ class MainActivity : ComponentActivity() {
             failurePrefix = "同期に失敗しました",
             requiredHealthPermissions = config.requiredSyncPermissions()
         ) { client ->
-            val result = HealthNotionSyncEngine.syncConfigured(client, config, lookbackDays)
+            val result = HealthNotionSyncEngine.syncConfigured(client, config, DEFAULT_LOOKBACK_DAYS)
             result.toDisplayMessage()
         }
     }
@@ -2874,52 +2758,6 @@ class MainActivity : ComponentActivity() {
         return lines.joinToString(separator = "\n")
     }
 
-    private fun StepDebugSyncResult.toDebugText(): String {
-        val rawTotal = details.sumOf { it.steps }
-        val lines = mutableListOf<String>()
-        lines.add("対象日: ${measurement.date}")
-        lines.add("Notion同期結果: ${operation.label}")
-        lines.add("集計対象origin: すべて")
-        lines.add("Notionへ送信した合計歩数: ${measurement.steps}歩")
-        lines.add("GoogleHealth明細の合計歩数: ${rawTotal}歩")
-        if (rawTotal != measurement.steps) {
-            lines.add("差分: ${measurement.steps - rawTotal}歩")
-        }
-        lines.add("Notionへ保存した測定日時: ${displayDateTime(measurement.recordedAt)}")
-        lines.add("")
-        lines.add("dataOrigin.packageName別合計:")
-        details
-            .groupBy { it.dataOriginPackageName }
-            .mapValues { (_, records) -> records.sumOf { it.steps } }
-            .toSortedMap()
-            .forEach { (packageName, steps) ->
-                lines.add("- $packageName: ${steps}歩")
-            }
-        lines.add("")
-        lines.add("recordingMethod別合計:")
-        details
-            .groupBy { it.recordingMethod }
-            .mapValues { (_, records) -> records.sumOf { it.steps } }
-            .toSortedMap()
-            .forEach { (recordingMethod, steps) ->
-                lines.add("- ${recordingMethod.label}: ${steps}歩")
-            }
-        lines.add("")
-        lines.add("GoogleHealth明細: ${details.size}件")
-        if (details.isEmpty()) {
-            lines.add("明細レコードは取得できませんでした。Health Connectの日次集計APIの合計値をNotionへ送信しています。")
-        } else {
-            details.forEachIndexed { index, detail ->
-                lines.add(
-                    "${index + 1}. ${displayDateTime(detail.startTime)} - ${displayDateTime(detail.endTime)} / ${detail.steps}歩 / ${detail.dataOriginPackageName} / ${detail.recordingMethod.label}"
-                )
-            }
-        }
-        lines.add("")
-        lines.add("再開を押すと次の日の同期に進みます。")
-        return lines.joinToString(separator = "\n")
-    }
-
     private fun dismissSyncDialog() {
         syncDialog?.dismiss()
         syncDialog = null
@@ -3018,7 +2856,7 @@ class MainActivity : ComponentActivity() {
     private suspend fun readDailyStepDebugMeasurements(client: HealthConnectClient): List<DailyStepDebugMeasurement> {
         val zone = ZoneId.systemDefault()
         val today = LocalDate.now(zone)
-        val startDate = today.minusDays(lookbackDays)
+        val startDate = today.minusDays(DEFAULT_LOOKBACK_DAYS)
         val endDate = today.plusDays(1)
         val timeRange = TimeRangeFilter.between(
             startDate.atStartOfDay(zone).toInstant(),
@@ -3145,7 +2983,7 @@ class MainActivity : ComponentActivity() {
         val zone = ZoneId.systemDefault()
         val today = LocalDate.now(zone)
         return TimeRangeFilter.between(
-            today.minusDays(lookbackDays).atStartOfDay(zone).toInstant(),
+            today.minusDays(DEFAULT_LOOKBACK_DAYS).atStartOfDay(zone).toInstant(),
             today.plusDays(1).atStartOfDay(zone).toInstant()
         )
     }
@@ -3244,11 +3082,6 @@ private data class UpdateNoticeViews(
 private data class SyncStatusCardViews(
     val healthConnectDateText: TextView,
     val notionDateText: TextView
-)
-
-private data class SettingsTab(
-    val label: String,
-    val content: LinearLayout
 )
 
 private data class UiPalette(
