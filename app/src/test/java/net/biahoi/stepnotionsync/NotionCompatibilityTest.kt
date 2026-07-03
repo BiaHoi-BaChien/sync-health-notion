@@ -43,6 +43,18 @@ class NotionCompatibilityTest {
     }
 
     @Test
+    fun notionDatabaseUrlNormalizesHyphenatedIds() {
+        assertEquals(
+            "https://www.notion.so/2f26ee68df304251aad48ddc420cba3d",
+            notionDatabaseUrl("2f26ee68-df30-4251-aad4-8ddc420cba3d")
+        )
+        assertEquals(
+            "https://www.notion.so/2f26ee68df304251aad48ddc420cba3d",
+            notionDatabaseUrl("2f26ee68df304251aad48ddc420cba3d")
+        )
+    }
+
+    @Test
     fun autoSyncRetriesNameResolutionErrorsWithoutRecordingFailure() {
         assertTrue(isRetryableAutoSyncError(UnknownHostException("api.notion.com")))
     }

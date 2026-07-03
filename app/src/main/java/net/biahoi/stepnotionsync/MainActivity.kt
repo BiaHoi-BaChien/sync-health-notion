@@ -251,6 +251,7 @@ class MainActivity : ComponentActivity() {
             actionLabel = "すぐに同期",
             actionDescription = "歩数をすぐに同期",
             action = { syncStepsToNotion() },
+            notionAction = { openConfiguredNotionPage("歩数", config.stepsDataSourceId) },
         ).also { views ->
             stepsPhoneDateText = views.healthConnectDateText
             stepsNotionDateText = views.notionDateText
@@ -264,7 +265,8 @@ class MainActivity : ComponentActivity() {
             action = { syncVitalsToNotion() },
             secondaryActionDescription = "バイタルをHealth Connectに登録",
             secondaryActionIconResId = R.drawable.ic_add,
-            secondaryAction = { showManualVitalEntryDialog() }
+            secondaryAction = { showManualVitalEntryDialog() },
+            notionAction = { openConfiguredNotionPage("バイタル", config.vitalsDataSourceId) },
         ).also { views ->
             vitalsPhoneDateText = views.healthConnectDateText
             vitalsNotionDateText = views.notionDateText
@@ -278,7 +280,8 @@ class MainActivity : ComponentActivity() {
             action = { syncWeightToNotion() },
             secondaryActionDescription = "体重をHealth Connectに登録",
             secondaryActionIconResId = R.drawable.ic_add,
-            secondaryAction = { showManualWeightEntryDialog() }
+            secondaryAction = { showManualWeightEntryDialog() },
+            notionAction = { openConfiguredNotionPage("体重", config.weightDataSourceId) },
         ).also { views ->
             weightPhoneDateText = views.healthConnectDateText
             weightNotionDateText = views.notionDateText
@@ -601,7 +604,8 @@ class MainActivity : ComponentActivity() {
         action: (() -> Unit)? = null,
         secondaryActionDescription: String? = null,
         secondaryActionIconResId: Int? = null,
-        secondaryAction: (() -> Unit)? = null
+        secondaryAction: (() -> Unit)? = null,
+        notionAction: (() -> Unit)? = null
     ): SyncStatusCardViews {
         val density = resources.displayMetrics.density
         val palette = uiPalette()
@@ -669,7 +673,13 @@ class MainActivity : ComponentActivity() {
         val leftIcon = if (healthConnectFirst) R.drawable.ic_phone else R.drawable.ic_notion
         val rightLabel = presentation.rightLabel
         val rightIcon = if (healthConnectFirst) R.drawable.ic_notion else R.drawable.ic_phone
-        val leftDate = body.addEndpoint(leftLabel, leftIcon)
+        val notionActionDescription = "${title}のNotionデータベースを開く"
+        val leftDate = body.addEndpoint(
+            label = leftLabel,
+            iconResId = leftIcon,
+            actionDescription = notionActionDescription.takeIf { leftIcon == R.drawable.ic_notion },
+            action = notionAction.takeIf { leftIcon == R.drawable.ic_notion }
+        )
         body.addView(LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
@@ -685,7 +695,12 @@ class MainActivity : ComponentActivity() {
                 layoutParams = LinearLayout.LayoutParams((74 * density).toInt(), (26 * density).toInt())
             })
         })
-        val rightDate = body.addEndpoint(rightLabel, rightIcon)
+        val rightDate = body.addEndpoint(
+            label = rightLabel,
+            iconResId = rightIcon,
+            actionDescription = notionActionDescription.takeIf { rightIcon == R.drawable.ic_notion },
+            action = notionAction.takeIf { rightIcon == R.drawable.ic_notion }
+        )
         card.addView(body)
         addView(card)
         return if (healthConnectFirst) {
@@ -705,7 +720,12 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun LinearLayout.addEndpoint(label: String, iconResId: Int): TextView {
+    private fun LinearLayout.addEndpoint(
+        label: String,
+        iconResId: Int,
+        actionDescription: String? = null,
+        action: (() -> Unit)? = null
+    ): TextView {
         val density = resources.displayMetrics.density
         val palette = uiPalette()
         val isPhoneIcon = iconResId == R.drawable.ic_phone
@@ -715,8 +735,15 @@ class MainActivity : ComponentActivity() {
             gravity = Gravity.CENTER
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         }
-        column.addView(ImageView(context).apply {
+        val endpointIcon = ImageView(context).apply {
             setImageResource(iconResId)
+            if (actionDescription != null && action != null) {
+                contentDescription = actionDescription
+                tooltipText = actionDescription
+                isClickable = true
+                isFocusable = true
+                setOnClickListener { action() }
+            }
             imageTintList = android.content.res.ColorStateList.valueOf(
                 when {
                     isPhoneIcon -> palette.onAccent
@@ -737,7 +764,8 @@ class MainActivity : ComponentActivity() {
             }
             setPadding((18 * density).toInt(), (18 * density).toInt(), (18 * density).toInt(), (18 * density).toInt())
             layoutParams = LinearLayout.LayoutParams((80 * density).toInt(), (80 * density).toInt())
-        })
+        }
+        column.addView(endpointIcon)
         column.addView(TextView(context).apply {
             text = label
             textSize = 17f
@@ -3093,25 +3121,48 @@ class MainActivity : ComponentActivity() {
             }
 
             views.message.text = "現在のバージョンは ${currentVersion.label} です。${release.version.label} が公開されています。"
-            views.downloadButton.setOnClickListener { openLatestRelease(GITHUB_RELEASES_PAGE_URL) }
+            views.downloadButton.setOnClickListener { openUrl(GITHUB_RELEASES_PAGE_URL, "ダウンロードページを開けませんでした。") }
             views.card.visibility = View.VISIBLE
         }
     }
 
-    private fun openLatestRelease(url: String) {
+    private fun openConfiguredNotionPage(label: String, dataSourceId: String) {
+        val prefs = getSharedPreferences("notion", Context.MODE_PRIVATE)
+        val normalizedDataSourceId = dataSourceId.trim()
+        if (normalizedDataSourceId.isBlank()) {
+            setStatusMessage("${label}のData Source IDが未設定です。", floating = true)
+            return
+        }
+        if (SecureSettingsStore.loadToken(prefs).isBlank()) {
+            setStatusMessage("Notion API Tokenを設定してください。", floating = true)
+            return
+        }
+
+        CoroutineScope(Dispatchers.Main).launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    notionDatabaseUrl(NotionClient(currentConfig()).retrieveDataSourceDatabaseId(normalizedDataSourceId))
+                }
+            }
+            result
+                .onSuccess { openUrl(it, "${label}のNotionページを開けませんでした。") }
+                .onFailure { error ->
+                    val exception = error as? Exception ?: RuntimeException(error)
+                    setStatusMessage("${label}のNotionページを開けませんでした。${safeErrorMessage(exception)}", floating = true)
+                }
+        }
+    }
+
+    private fun openUrl(url: String, failureMessage: String) {
         runCatching {
             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
         }.onFailure {
-            setStatusMessage("ダウンロードページを開けませんでした。", floating = true)
+            setStatusMessage(failureMessage, floating = true)
         }
     }
 
     private fun openManualPage() {
-        runCatching {
-            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(MANUAL_PAGE_URL)))
-        }.onFailure {
-            setStatusMessage("設定マニュアルを開けませんでした。", floating = true)
-        }
+        openUrl(MANUAL_PAGE_URL, "設定マニュアルを開けませんでした。")
     }
 
 }
@@ -4235,6 +4286,20 @@ private fun WeightMeasurement.toHealthConnectRecord(
     )
 
 private class NotionClient(private val config: SyncConfig) {
+    fun retrieveDataSourceDatabaseId(dataSourceId: String): String {
+        val response = request("GET", "https://api.notion.com/v1/data_sources/${validDataSourceId(dataSourceId)}")
+        val parent = response.optJSONObject("parent")
+        val databaseId = when (parent?.optString("type")) {
+            "database_id" -> parent.optString("database_id")
+            "data_source_id" -> parent.optString("database_id")
+            else -> null
+        }?.takeIf { it.isNotBlank() }
+        require(databaseId != null) {
+            "NotionデータベースURLを特定できませんでした。"
+        }
+        return databaseId
+    }
+
     fun latestStepsDate(lookbackDays: Long): NotionDateValue? =
         latestDateInSyncWindow(validDataSourceId(config.stepsDataSourceId), config.stepsDateProperty, lookbackDays)
 
@@ -4593,20 +4658,24 @@ private class NotionClient(private val config: SyncConfig) {
         incompleteQueryError(type, reason)?.let { throw IllegalStateException(it) }
     }
 
-    private fun request(method: String, endpoint: String, body: JSONObject): JSONObject {
+    private fun request(method: String, endpoint: String, body: JSONObject? = null): JSONObject {
         repeat(NOTION_MAX_REQUEST_ATTEMPTS) { attempt ->
             val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
                 requestMethod = method
                 connectTimeout = 15_000
                 readTimeout = 30_000
                 doInput = true
-                doOutput = true
+                doOutput = body != null
                 setRequestProperty("Authorization", "Bearer ${config.token}")
                 setRequestProperty("Notion-Version", NOTION_API_VERSION)
-                setRequestProperty("Content-Type", "application/json")
+                if (body != null) {
+                    setRequestProperty("Content-Type", "application/json")
+                }
             }
             try {
-                OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { it.write(body.toString()) }
+                if (body != null) {
+                    OutputStreamWriter(connection.outputStream, Charsets.UTF_8).use { it.write(body.toString()) }
+                }
 
                 val status = connection.responseCode
                 val stream = if (status in 200..299) connection.inputStream else connection.errorStream
@@ -4640,6 +4709,14 @@ private class NotionClient(private val config: SyncConfig) {
         }
         error("Notion API request exhausted retries")
     }
+}
+
+internal fun notionDatabaseUrl(databaseId: String): String {
+    val normalized = databaseId.trim().replace("-", "")
+    require(NOTION_DATABASE_ID_PATTERN.matches(normalized)) {
+        "NotionデータベースIDの形式が正しくありません。"
+    }
+    return "https://www.notion.so/$normalized"
 }
 
 internal fun incompleteQueryError(type: String?, reason: String?): String? {
@@ -4712,6 +4789,7 @@ private const val NOTION_MAX_REQUEST_ATTEMPTS = 3
 private const val NOTION_INITIAL_RETRY_DELAY_MILLIS = 500L
 private const val NOTION_MAX_RETRY_DELAY_MILLIS = 60_000L
 private val NOTION_RETRYABLE_STATUS_CODES = setOf(409, 429, 500, 502, 503, 504, 529)
+private val NOTION_DATABASE_ID_PATTERN = Regex("^[A-Za-z0-9]{32}$")
 private const val MANUAL_VITAL_FIELD_COUNT = 3
 private const val MIN_MANUAL_VITAL_DIGITS_PER_COMPACT_VALUE = 2
 private const val MAX_MANUAL_VITAL_DIGITS_PER_COMPACT_VALUE = 3
