@@ -4,8 +4,8 @@ plugins {
 
 import java.util.Properties
 
-val appVersionName = "0.2.6"
-val appVersionCode = 117
+val appVersionName = "0.2.7"
+val appVersionCode = 118
 val releaseKeystorePropertiesFile = rootProject.file("keystore.properties")
 val releaseKeystoreProperties = Properties().apply {
     if (releaseKeystorePropertiesFile.isFile) {
