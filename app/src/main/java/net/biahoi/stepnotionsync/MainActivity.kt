@@ -1563,7 +1563,7 @@ class MainActivity : ComponentActivity() {
             requiredHealthPermissions = config.stepsDirection.stepsPermissions(),
             permissionTarget = "歩数"
         ) { client ->
-            val synced = HealthNotionSyncEngine.syncSteps(client, config, DEFAULT_LOOKBACK_DAYS)
+            val synced = HealthNotionSyncEngine.syncSteps(client, config, DEFAULT_LOOKBACK_DAYS, packageName)
             syncCountMessage("歩数データ", synced)
         }
     }
@@ -1647,7 +1647,7 @@ class MainActivity : ComponentActivity() {
             requiredHealthPermissions = config.vitalsDirection.vitalsPermissions(),
             permissionTarget = "バイタル"
         ) { client ->
-            val synced = HealthNotionSyncEngine.syncVitals(client, config, DEFAULT_LOOKBACK_DAYS)
+            val synced = HealthNotionSyncEngine.syncVitals(client, config, DEFAULT_LOOKBACK_DAYS, packageName)
             syncCountMessage("血圧・心拍データ", synced)
         }
     }
@@ -1669,7 +1669,7 @@ class MainActivity : ComponentActivity() {
             requiredHealthPermissions = config.weightDirection.weightPermissions(),
             permissionTarget = "体重"
         ) { client ->
-            val synced = HealthNotionSyncEngine.syncWeight(client, config, DEFAULT_LOOKBACK_DAYS)
+            val synced = HealthNotionSyncEngine.syncWeight(client, config, DEFAULT_LOOKBACK_DAYS, packageName)
             syncCountMessage("体重データ", synced)
         }
     }
@@ -2231,7 +2231,7 @@ class MainActivity : ComponentActivity() {
             failurePrefix = "同期に失敗しました",
             requiredHealthPermissions = config.requiredSyncPermissions()
         ) { client ->
-            val result = HealthNotionSyncEngine.syncConfigured(client, config, DEFAULT_LOOKBACK_DAYS)
+            val result = HealthNotionSyncEngine.syncConfigured(client, config, DEFAULT_LOOKBACK_DAYS, packageName)
             result.toDisplayMessage()
         }
     }
@@ -3495,6 +3495,9 @@ private fun workerErrorMessage(error: Exception): String {
 }
 
 internal fun isRetryableAutoSyncError(error: Exception): Boolean {
+    if (error is NotionSyncDataException) {
+        return false
+    }
     return (error as? NotionRequestException)?.isRetryable != false
 }
 
@@ -3604,7 +3607,12 @@ class AutoSyncWorker(
         }
 
         return try {
-            val result = HealthNotionSyncEngine.syncConfigured(client, config, DEFAULT_LOOKBACK_DAYS)
+            val result = HealthNotionSyncEngine.syncConfigured(
+                client,
+                config,
+                DEFAULT_LOOKBACK_DAYS,
+                applicationContext.packageName
+            )
             recordAutoSyncSuccess(applicationContext, result)
             scheduleNextAutoSync(applicationContext)
             Result.success()
@@ -3625,11 +3633,18 @@ private object HealthNotionSyncEngine {
     suspend fun syncConfigured(
         client: HealthConnectClient,
         config: SyncConfig,
-        lookbackDays: Long
+        lookbackDays: Long,
+        applicationPackageName: String
     ): SyncResultCounts {
-        val steps = if (config.hasStepsSettings()) syncSteps(client, config, lookbackDays) else 0
-        val vitals = if (config.hasVitalsSettings()) syncVitals(client, config, lookbackDays) else 0
-        val weight = if (config.hasWeightSettings()) syncWeight(client, config, lookbackDays) else 0
+        val steps = if (config.hasStepsSettings()) {
+            syncSteps(client, config, lookbackDays, applicationPackageName)
+        } else 0
+        val vitals = if (config.hasVitalsSettings()) {
+            syncVitals(client, config, lookbackDays, applicationPackageName)
+        } else 0
+        val weight = if (config.hasWeightSettings()) {
+            syncWeight(client, config, lookbackDays, applicationPackageName)
+        } else 0
         return SyncResultCounts(
             steps = steps.takeIf { config.hasStepsSettings() },
             vitals = vitals.takeIf { config.hasVitalsSettings() },
@@ -3637,9 +3652,14 @@ private object HealthNotionSyncEngine {
         )
     }
 
-    suspend fun syncSteps(client: HealthConnectClient, config: SyncConfig, lookbackDays: Long): Int {
+    suspend fun syncSteps(
+        client: HealthConnectClient,
+        config: SyncConfig,
+        lookbackDays: Long,
+        applicationPackageName: String
+    ): Int {
         if (config.stepsDirection == SyncDirection.NOTION_TO_HEALTH_CONNECT) {
-            return syncStepsToHealthConnect(client, config, lookbackDays)
+            return syncStepsToHealthConnect(client, config, lookbackDays, applicationPackageName)
         }
         val notion = NotionClient(config)
         val existingPages = notion.readStepPagesByDate(lookbackDays).toMutableMap()
@@ -3670,9 +3690,14 @@ private object HealthNotionSyncEngine {
         return synced
     }
 
-    suspend fun syncVitals(client: HealthConnectClient, config: SyncConfig, lookbackDays: Long): Int {
+    suspend fun syncVitals(
+        client: HealthConnectClient,
+        config: SyncConfig,
+        lookbackDays: Long,
+        applicationPackageName: String
+    ): Int {
         if (config.vitalsDirection == SyncDirection.NOTION_TO_HEALTH_CONNECT) {
-            return syncVitalsToHealthConnect(client, config, lookbackDays)
+            return syncVitalsToHealthConnect(client, config, lookbackDays, applicationPackageName)
         }
         val notion = NotionClient(config)
         val existingPages = notion.readVitalPagesByMinute(lookbackDays).toMutableMap()
@@ -3694,9 +3719,14 @@ private object HealthNotionSyncEngine {
         return synced
     }
 
-    suspend fun syncWeight(client: HealthConnectClient, config: SyncConfig, lookbackDays: Long): Int {
+    suspend fun syncWeight(
+        client: HealthConnectClient,
+        config: SyncConfig,
+        lookbackDays: Long,
+        applicationPackageName: String
+    ): Int {
         if (config.weightDirection == SyncDirection.NOTION_TO_HEALTH_CONNECT) {
-            return syncWeightToHealthConnect(client, config, lookbackDays)
+            return syncWeightToHealthConnect(client, config, lookbackDays, applicationPackageName)
         }
         val notion = NotionClient(config)
         val existingPages = notion.readWeightPagesByMinute(lookbackDays).toMutableMap()
@@ -3721,7 +3751,8 @@ private object HealthNotionSyncEngine {
     private suspend fun syncStepsToHealthConnect(
         client: HealthConnectClient,
         config: SyncConfig,
-        lookbackDays: Long
+        lookbackDays: Long,
+        applicationPackageName: String
     ): Int {
         val existingRecords = client.readRecords(
             ReadRecordsRequest(
@@ -3730,7 +3761,9 @@ private object HealthNotionSyncEngine {
                 ascendingOrder = true,
                 pageSize = 5000
             )
-        ).records.associateLatestByMinute { it.endTime }
+        ).records
+            .ownedByApplication(applicationPackageName) { it.metadata.dataOrigin.packageName }
+            .associateLatestByMinute { it.endTime }
         var synced = 0
         for (measurement in NotionClient(config).readStepMeasurements(lookbackDays)) {
             val existingRecord = existingRecords[measurement.recordedAt.toMinuteKey()]
@@ -3750,7 +3783,8 @@ private object HealthNotionSyncEngine {
     private suspend fun syncVitalsToHealthConnect(
         client: HealthConnectClient,
         config: SyncConfig,
-        lookbackDays: Long
+        lookbackDays: Long,
+        applicationPackageName: String
     ): Int {
         val existingBloodPressures = client.readRecords(
             ReadRecordsRequest(
@@ -3759,7 +3793,9 @@ private object HealthNotionSyncEngine {
                 ascendingOrder = true,
                 pageSize = 5000
             )
-        ).records.associateLatestByMinute { it.time }
+        ).records
+            .ownedByApplication(applicationPackageName) { it.metadata.dataOrigin.packageName }
+            .associateLatestByMinute { it.time }
         val existingHeartRates = client.readRecords(
             ReadRecordsRequest(
                 recordType = HeartRateRecord::class,
@@ -3767,7 +3803,9 @@ private object HealthNotionSyncEngine {
                 ascendingOrder = true,
                 pageSize = 5000
             )
-        ).records.associateLatestByMinute { it.startTime }
+        ).records
+            .ownedByApplication(applicationPackageName) { it.metadata.dataOrigin.packageName }
+            .associateLatestByMinute { it.startTime }
         val measurements = latestVitalMeasurementsByMinute(
             NotionClient(config).readVitalMeasurements(lookbackDays)
         )
@@ -3811,7 +3849,8 @@ private object HealthNotionSyncEngine {
     private suspend fun syncWeightToHealthConnect(
         client: HealthConnectClient,
         config: SyncConfig,
-        lookbackDays: Long
+        lookbackDays: Long,
+        applicationPackageName: String
     ): Int {
         val existingRecords = client.readRecords(
             ReadRecordsRequest(
@@ -3820,7 +3859,9 @@ private object HealthNotionSyncEngine {
                 ascendingOrder = true,
                 pageSize = 5000
             )
-        ).records.associateLatestByMinute { it.time }
+        ).records
+            .ownedByApplication(applicationPackageName) { it.metadata.dataOrigin.packageName }
+            .associateLatestByMinute { it.time }
         var synced = 0
         for (measurement in latestWeightMeasurementsByMinute(NotionClient(config).readWeightMeasurements(lookbackDays))) {
             val existingRecord = existingRecords[measurement.measuredAt.toMinuteKey()]
@@ -4068,6 +4109,80 @@ internal data class WeightMeasurement(
     val measuredAt: Instant,
     val kilograms: Double
 )
+
+internal fun isOwnedHealthConnectRecord(
+    recordPackageName: String,
+    applicationPackageName: String
+): Boolean = recordPackageName == applicationPackageName
+
+internal fun <T> Iterable<T>.ownedByApplication(
+    applicationPackageName: String,
+    recordPackageName: (T) -> String
+): List<T> = filter { record ->
+    isOwnedHealthConnectRecord(recordPackageName(record), applicationPackageName)
+}
+
+internal fun notionVitalMeasurementOrNull(
+    measuredAt: Instant,
+    systolic: Double,
+    diastolic: Double,
+    heartRate: Double?
+): VitalMeasurement? {
+    if (!systolic.isFinite() || systolic !in 20.0..200.0) {
+        return null
+    }
+    if (!diastolic.isFinite() || diastolic !in 10.0..180.0 || systolic <= diastolic) {
+        return null
+    }
+    val validatedHeartRate = when {
+        heartRate == null -> null
+        !heartRate.isFinite() || heartRate !in 1.0..300.0 || heartRate % 1.0 != 0.0 -> return null
+        else -> heartRate.toLong()
+    }
+    return VitalMeasurement(measuredAt, systolic, diastolic, validatedHeartRate)
+}
+
+internal fun notionWeightMeasurementOrNull(
+    measuredAt: Instant,
+    kilograms: Double
+): WeightMeasurement? {
+    if (!kilograms.isFinite() || kilograms <= 0.0 || kilograms > 1000.0) {
+        return null
+    }
+    return WeightMeasurement(measuredAt, kilograms)
+}
+
+internal fun validateNotionMeasurementPage(
+    pageNumber: Int,
+    currentRowCount: Int,
+    pageRowCount: Int,
+    hasMore: Boolean,
+    nextCursor: String?,
+    seenCursors: Set<String>,
+    maxPages: Int = NOTION_MAX_MEASUREMENT_QUERY_PAGES,
+    maxRows: Int = NOTION_MAX_MEASUREMENT_ROWS
+): String? {
+    val totalRowCount = currentRowCount + pageRowCount
+    if (totalRowCount > maxRows || (hasMore && totalRowCount >= maxRows)) {
+        throw NotionSyncDataException(
+            "Notionの取得件数が上限${maxRows}件に達しました。同期期間またはData Sourceを確認してください。"
+        )
+    }
+    if (!hasMore) {
+        return null
+    }
+    if (pageNumber >= maxPages) {
+        throw NotionSyncDataException(
+            "Notionのページ取得が上限${maxPages}回に達しました。同期期間またはData Sourceを確認してください。"
+        )
+    }
+    val validatedCursor = nextCursor?.takeIf { it.isNotBlank() }
+        ?: throw NotionSyncDataException("Notion APIのページ情報に次のカーソルがありません。")
+    if (validatedCursor in seenCursors) {
+        throw NotionSyncDataException("Notion APIのページ情報で同じカーソルが繰り返されました。")
+    }
+    return validatedCursor
+}
 
 internal fun pairVitalMeasurements(
     bloodPressures: List<BloodPressureMeasurement>,
@@ -4422,7 +4537,7 @@ private class NotionClient(private val config: SyncConfig) {
             dataSourceId = config.vitalsDataSourceId,
             dateProperty = config.vitalsMeasuredAtProperty,
             lookbackDays = lookbackDays
-        ).mapNotNull { it.toVitalMeasurement() }
+        ).mapNotNull { it.toHealthConnectVitalMeasurement() }
     }
 
     fun readWeightMeasurements(lookbackDays: Long): List<WeightMeasurement> {
@@ -4430,7 +4545,7 @@ private class NotionClient(private val config: SyncConfig) {
             dataSourceId = config.weightDataSourceId,
             dateProperty = config.weightMeasuredAtProperty,
             lookbackDays = lookbackDays
-        ).mapNotNull { it.toWeightMeasurement() }
+        ).mapNotNull { it.toHealthConnectWeightMeasurement() }
     }
 
     private fun readMeasurementPages(
@@ -4444,7 +4559,11 @@ private class NotionClient(private val config: SyncConfig) {
         val end = today.plusDays(1).atStartOfDay(zone).toInstant().toNotionDateTime()
         val pages = mutableListOf<NotionMeasurementPage>()
         var cursor: String? = null
+        var pageNumber = 0
+        var totalRowCount = 0
+        val seenCursors = mutableSetOf<String>()
         do {
+            pageNumber++
             val body = JSONObject()
                 .put(
                     "filter",
@@ -4464,14 +4583,22 @@ private class NotionClient(private val config: SyncConfig) {
             )
             ensureCompleteQuery(response)
             val results = response.optJSONArray("results") ?: JSONArray()
+            val nextCursor = validateNotionMeasurementPage(
+                pageNumber = pageNumber,
+                currentRowCount = totalRowCount,
+                pageRowCount = results.length(),
+                hasMore = response.optBoolean("has_more"),
+                nextCursor = response.optString("next_cursor"),
+                seenCursors = seenCursors
+            )
+            totalRowCount += results.length()
             for (index in 0 until results.length()) {
                 val page = results.optJSONObject(index) ?: continue
                 val properties = page.optJSONObject("properties") ?: continue
                 pages.add(NotionMeasurementPage(page.optString("id"), properties))
             }
-            cursor = response.optString("next_cursor").takeIf {
-                response.optBoolean("has_more") && it.isNotBlank()
-            }
+            cursor = nextCursor
+            cursor?.let { seenCursors.add(it) }
         } while (cursor != null)
         return pages
     }
@@ -4480,6 +4607,16 @@ private class NotionClient(private val config: SyncConfig) {
         val measuredAt = properties.notionInstant(config.weightMeasuredAtProperty) ?: return null
         val kilograms = properties.notionNumber(config.weightProperty) ?: return null
         return WeightMeasurement(measuredAt, kilograms)
+    }
+
+    private fun NotionMeasurementPage.toHealthConnectWeightMeasurement(): WeightMeasurement? {
+        val measuredAt = properties.notionInstant(config.weightMeasuredAtProperty) ?: return null
+        val kilograms = properties.notionNumber(config.weightProperty) ?: return null
+        return notionWeightMeasurementOrNull(measuredAt, kilograms).also { measurement ->
+            if (measurement == null) {
+                Log.w(NOTION_SYNC_LOG_TAG, "Health Connectの許容範囲外のNotion体重レコードをスキップしました")
+            }
+        }
     }
 
     private fun NotionMeasurementPage.toVitalMeasurement(): VitalMeasurement? {
@@ -4492,6 +4629,18 @@ private class NotionClient(private val config: SyncConfig) {
             diastolic = diastolic,
             heartRate = properties.notionNumber(config.heartRateProperty)?.toLong()
         )
+    }
+
+    private fun NotionMeasurementPage.toHealthConnectVitalMeasurement(): VitalMeasurement? {
+        val measuredAt = properties.notionInstant(config.vitalsMeasuredAtProperty) ?: return null
+        val systolic = properties.notionNumber(config.systolicProperty) ?: return null
+        val diastolic = properties.notionNumber(config.diastolicProperty) ?: return null
+        val heartRate = properties.notionNumber(config.heartRateProperty)
+        return notionVitalMeasurementOrNull(measuredAt, systolic, diastolic, heartRate).also { measurement ->
+            if (measurement == null) {
+                Log.w(NOTION_SYNC_LOG_TAG, "Health Connectへ安全に書き込めないNotionバイタルレコードをスキップしました")
+            }
+        }
     }
 
     private fun readMeasurementTimes(
@@ -4788,6 +4937,9 @@ private const val NOTION_API_VERSION = "2026-03-11"
 private const val NOTION_MAX_REQUEST_ATTEMPTS = 3
 private const val NOTION_INITIAL_RETRY_DELAY_MILLIS = 500L
 private const val NOTION_MAX_RETRY_DELAY_MILLIS = 60_000L
+private const val NOTION_MAX_MEASUREMENT_QUERY_PAGES = 100
+private const val NOTION_MAX_MEASUREMENT_ROWS = 10_000
+private const val NOTION_SYNC_LOG_TAG = "NotionSync"
 private val NOTION_RETRYABLE_STATUS_CODES = setOf(409, 429, 500, 502, 503, 504, 529)
 private val NOTION_DATABASE_ID_PATTERN = Regex("^[A-Za-z0-9]{32}$")
 private const val MANUAL_VITAL_FIELD_COUNT = 3
@@ -4904,6 +5056,8 @@ private object GitHubReleaseClient {
 private data class AppRelease(
     val version: SemanticVersion
 )
+
+internal class NotionSyncDataException(message: String) : RuntimeException(message)
 
 private class NotionRequestException(
     private val status: Int,
