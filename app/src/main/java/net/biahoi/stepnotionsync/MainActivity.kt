@@ -12,6 +12,8 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
+import android.media.AudioManager
+import android.media.ToneGenerator
 import android.net.Uri
 import android.os.Bundle
 import android.speech.RecognizerIntent
@@ -149,6 +151,7 @@ class MainActivity : ComponentActivity() {
     private var manualVitalVoiceInputs: ManualVitalVoiceInputs? = null
     private var manualWeightVoiceInput: EditText? = null
     private var manualVoiceTarget: ManualVoiceTarget? = null
+    private var operationCompletedTone: ToneGenerator? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -193,6 +196,8 @@ class MainActivity : ComponentActivity() {
         latestDateRefreshJob?.cancel()
         dismissSyncDialog()
         dismissLatestDateRefreshDialog()
+        operationCompletedTone?.release()
+        operationCompletedTone = null
         super.onDestroy()
     }
 
@@ -2161,6 +2166,7 @@ class MainActivity : ComponentActivity() {
         withContext(Dispatchers.IO) {
             client.insertRecords(measurement.toHealthConnectRecords())
         }
+        playOperationCompletedSound()
         setStatusMessage("バイタルをHealth Connectに登録しました。", floating = true)
         refreshLatestDates()
     }
@@ -2215,6 +2221,7 @@ class MainActivity : ComponentActivity() {
                 listOf(measurement.toHealthConnectRecord(metadataIdPrefix = "manual-weight"))
             )
         }
+        playOperationCompletedSound()
         setStatusMessage("体重をHealth Connectに登録しました。", floating = true)
         refreshLatestDates()
     }
@@ -2253,6 +2260,7 @@ class MainActivity : ComponentActivity() {
             try {
                 val client = checkedHealthClient(requiredHealthPermissions, permissionTarget) ?: return@launch
                 val resultMessage = withContext(Dispatchers.IO) { sync(client) }
+                playOperationCompletedSound()
                 setStatusMessage(resultMessage, floating = true)
                 refreshLatestDates()
             } catch (_: CancellationException) {
@@ -2264,6 +2272,14 @@ class MainActivity : ComponentActivity() {
                 dismissSyncDialog()
             }
         }
+    }
+
+    private fun playOperationCompletedSound() {
+        val tone = operationCompletedTone ?: runCatching {
+            ToneGenerator(AudioManager.STREAM_NOTIFICATION, 100)
+        }.getOrNull()?.also { operationCompletedTone = it } ?: return
+
+        tone.startTone(ToneGenerator.TONE_PROP_ACK, OPERATION_COMPLETED_TONE_DURATION_MS)
     }
 
     private fun showSyncDialog(message: String) {
@@ -4940,6 +4956,7 @@ private const val NOTION_MAX_RETRY_DELAY_MILLIS = 60_000L
 private const val NOTION_MAX_MEASUREMENT_QUERY_PAGES = 100
 private const val NOTION_MAX_MEASUREMENT_ROWS = 10_000
 private const val NOTION_SYNC_LOG_TAG = "NotionSync"
+private const val OPERATION_COMPLETED_TONE_DURATION_MS = 180
 private val NOTION_RETRYABLE_STATUS_CODES = setOf(409, 429, 500, 502, 503, 504, 529)
 private val NOTION_DATABASE_ID_PATTERN = Regex("^[A-Za-z0-9]{32}$")
 private const val MANUAL_VITAL_FIELD_COUNT = 3
