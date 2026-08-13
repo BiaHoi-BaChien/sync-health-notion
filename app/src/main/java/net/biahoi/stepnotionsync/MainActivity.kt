@@ -12,7 +12,9 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
+import android.media.AudioAttributes
 import android.media.AudioManager
+import android.media.SoundPool
 import android.media.ToneGenerator
 import android.net.Uri
 import android.os.Bundle
@@ -153,6 +155,9 @@ class MainActivity : ComponentActivity() {
     private var manualWeightVoiceInput: EditText? = null
     private var manualVoiceTarget: ManualVoiceTarget? = null
     private var operationCompletedTone: ToneGenerator? = null
+    private var operationCompletedSoundPool: SoundPool? = null
+    private var medicalRobotSoundId: Int? = null
+    private var medicalRobotSoundLoaded = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -189,6 +194,7 @@ class MainActivity : ComponentActivity() {
         }
         migrateAutoSyncScheduleIfNeeded()
         applyUiMode()
+        initializeOperationCompletedSoundPlayer()
         showTopPage()
     }
 
@@ -199,6 +205,10 @@ class MainActivity : ComponentActivity() {
         dismissLatestDateRefreshDialog()
         operationCompletedTone?.release()
         operationCompletedTone = null
+        operationCompletedSoundPool?.release()
+        operationCompletedSoundPool = null
+        medicalRobotSoundId = null
+        medicalRobotSoundLoaded = false
         super.onDestroy()
     }
 
@@ -403,7 +413,11 @@ class MainActivity : ComponentActivity() {
         uiModeSpinner = root.addUiModeSpinner()
         root.addSectionTitle(
             title = "操作完了音",
-            helpText = "手動でのバイタル・体重登録と手動同期が成功したときに再生する音を選択します。"
+            helpText = """
+                手動でのバイタル・体重登録と手動同期が成功したときに再生する音を選択します。
+
+                実際の音量はスマホ本体の通知音設定に従います。
+            """.trimIndent()
         )
         operationSoundSpinner = root.addOperationSoundSpinner()
         root.addButton("試聴") {
@@ -2307,10 +2321,39 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun initializeOperationCompletedSoundPlayer() {
+        val audioAttributes = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_NOTIFICATION_EVENT)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+            .build()
+        val soundPool = SoundPool.Builder()
+            .setMaxStreams(1)
+            .setAudioAttributes(audioAttributes)
+            .build()
+        soundPool.setOnLoadCompleteListener { loadedPool, _, status ->
+            if (loadedPool === soundPool) {
+                medicalRobotSoundLoaded = status == 0
+            }
+        }
+        operationCompletedSoundPool = soundPool
+        medicalRobotSoundId = soundPool.load(this, R.raw.medical_robot_success, 1)
+    }
+
     private fun playOperationCompletedSound(
         preference: OperationSoundPreference = loadOperationSoundPreference()
     ): Boolean {
-        val toneType = preference.toneType ?: return false
+        if (preference == OperationSoundPreference.OFF) {
+            return false
+        }
+        if (preference == OperationSoundPreference.MEDICAL_ROBOT) {
+            val soundPool = operationCompletedSoundPool
+            val soundId = medicalRobotSoundId
+            if (soundPool != null && soundId != null && medicalRobotSoundLoaded) {
+                return soundPool.play(soundId, 1f, 1f, 1, 0, 1f) != 0
+            }
+        }
+
+        val toneType = preference.toneType ?: ToneGenerator.TONE_PROP_ACK
         val tone = operationCompletedTone ?: runCatching {
             ToneGenerator(AudioManager.STREAM_NOTIFICATION, 100)
         }.getOrNull()?.also { operationCompletedTone = it } ?: return false
@@ -3359,6 +3402,7 @@ internal enum class OperationSoundPreference(
     STANDARD("standard", "標準（現在の音）", ToneGenerator.TONE_PROP_ACK),
     BEEP("beep", "ビープ音", ToneGenerator.TONE_PROP_BEEP),
     PROMPT("prompt", "案内音", ToneGenerator.TONE_PROP_PROMPT),
+    MEDICAL_ROBOT("medical_robot", "未来感", null),
     OFF("off", "再生しない", null);
 
     companion object {
