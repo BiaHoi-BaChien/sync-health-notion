@@ -143,7 +143,10 @@ class MainActivity : ComponentActivity() {
     private lateinit var weightDirectionSpinner: Spinner
     private lateinit var autoSyncSpinner: Spinner
     private lateinit var uiModeSpinner: Spinner
-    private lateinit var operationSoundSpinner: Spinner
+    private lateinit var dataEntrySoundSpinner: Spinner
+    private lateinit var manualSyncSoundSpinner: Spinner
+    private val dataEntrySoundChoices = OperationSoundPreference.choicesFor(manualSync = false)
+    private val manualSyncSoundChoices = OperationSoundPreference.choicesFor(manualSync = true)
     private var currentSyncJob: Job? = null
     private var latestDateRefreshJob: Job? = null
     private var syncDialog: Dialog? = null
@@ -157,7 +160,8 @@ class MainActivity : ComponentActivity() {
     private var operationCompletedTone: ToneGenerator? = null
     private var operationCompletedSoundPool: SoundPool? = null
     private var medicalRobotSoundId: Int? = null
-    private var medicalRobotSoundLoaded = false
+    private var manualSyncSoundId: Int? = null
+    private val loadedOperationSoundIds = mutableSetOf<Int>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -208,7 +212,8 @@ class MainActivity : ComponentActivity() {
         operationCompletedSoundPool?.release()
         operationCompletedSoundPool = null
         medicalRobotSoundId = null
-        medicalRobotSoundLoaded = false
+        manualSyncSoundId = null
+        loadedOperationSoundIds.clear()
         super.onDestroy()
     }
 
@@ -411,29 +416,16 @@ class MainActivity : ComponentActivity() {
             """.trimIndent()
         )
         uiModeSpinner = root.addUiModeSpinner()
-        root.addSectionTitle(
-            title = "操作完了音",
-            helpText = """
-                手動でのバイタル・体重登録と手動同期が成功したときに再生する音を選択します。
-
-                実際の音量はスマホ本体の通知音設定に従います。
-            """.trimIndent()
+        dataEntrySoundSpinner = root.addOperationSoundSetting(
+            title = "データ追加完了音",
+            description = "手動でのバイタル・体重登録が成功したときに再生する音を選択します。",
+            choices = dataEntrySoundChoices
         )
-        operationSoundSpinner = root.addOperationSoundSpinner()
-        root.addButton("試聴") {
-            val preference = OperationSoundPreference.entries[operationSoundSpinner.selectedItemPosition]
-            when {
-                preference == OperationSoundPreference.OFF -> {
-                    setStatusMessage("操作完了音は再生しない設定です。", floating = true)
-                }
-                playOperationCompletedSound(preference) -> {
-                    setStatusMessage("操作完了音を再生しました。", floating = true)
-                }
-                else -> {
-                    setStatusMessage("操作完了音を再生できませんでした。", floating = true)
-                }
-            }
-        }
+        manualSyncSoundSpinner = root.addOperationSoundSetting(
+            title = "手動同期完了音",
+            description = "手動同期が成功したときに再生する音を選択します。",
+            choices = manualSyncSoundChoices
+        )
         root.addSectionTitle(
             title = "自動同期",
             helpText = """
@@ -1285,8 +1277,34 @@ class MainActivity : ComponentActivity() {
         return spinner
     }
 
-    private fun LinearLayout.addOperationSoundSpinner(): Spinner {
-        val spinner = createSettingsSpinner(OperationSoundPreference.entries.map { it.label }, 6, 8)
+    private fun LinearLayout.addOperationSoundSetting(
+        title: String,
+        description: String,
+        choices: List<OperationSoundPreference>
+    ): Spinner {
+        addSectionTitle(
+            title = title,
+            helpText = """
+                $description
+
+                実際の音量はスマホ本体の通知音設定に従います。
+            """.trimIndent()
+        )
+        return addOperationSoundSpinner(choices).also { spinner ->
+            addButton("試聴") {
+                val preference = choices[spinner.selectedItemPosition]
+                val message = when {
+                    preference == OperationSoundPreference.OFF -> "${title}は再生しない設定です。"
+                    playOperationCompletedSound(preference) -> "${title}を再生しました。"
+                    else -> "${title}を再生できませんでした。"
+                }
+                setStatusMessage(message, floating = true)
+            }
+        }
+    }
+
+    private fun LinearLayout.addOperationSoundSpinner(choices: List<OperationSoundPreference>): Spinner {
+        val spinner = createSettingsSpinner(choices.map { it.label }, 6, 8)
         addView(spinner)
         return spinner
     }
@@ -1356,8 +1374,18 @@ class MainActivity : ComponentActivity() {
         val autoSyncTime = prefs.getString(AUTO_SYNC_TIME_KEY, AUTO_SYNC_OFF) ?: AUTO_SYNC_OFF
         autoSyncSpinner.setSelection(autoSyncChoices().indexOfFirst { it.value == autoSyncTime }.coerceAtLeast(0))
         uiModeSpinner.setSelection(UiModePreference.indexOf(prefs.getString(UI_MODE_KEY, null)))
-        operationSoundSpinner.setSelection(
-            OperationSoundPreference.indexOf(prefs.getString(OPERATION_COMPLETED_SOUND_KEY, null))
+        val legacyOperationSound = prefs.getString(LEGACY_OPERATION_COMPLETED_SOUND_KEY, null)
+        dataEntrySoundSpinner.setSelection(
+            dataEntrySoundChoices.indexOf(OperationSoundPreference.from(
+                prefs.getString(DATA_ENTRY_COMPLETED_SOUND_KEY, null),
+                legacyOperationSound
+            )).coerceAtLeast(0)
+        )
+        manualSyncSoundSpinner.setSelection(
+            manualSyncSoundChoices.indexOf(OperationSoundPreference.from(
+                prefs.getString(MANUAL_SYNC_COMPLETED_SOUND_KEY, null),
+                legacyOperationSound
+            )).coerceAtLeast(0)
         )
     }
 
@@ -1384,8 +1412,12 @@ class MainActivity : ComponentActivity() {
             .putString(AUTO_SYNC_TIME_KEY, autoSyncChoices()[autoSyncSpinner.selectedItemPosition].value)
             .putString(UI_MODE_KEY, selectedUiMode)
             .putString(
-                OPERATION_COMPLETED_SOUND_KEY,
-                OperationSoundPreference.entries[operationSoundSpinner.selectedItemPosition].value
+                DATA_ENTRY_COMPLETED_SOUND_KEY,
+                dataEntrySoundChoices[dataEntrySoundSpinner.selectedItemPosition].value
+            )
+            .putString(
+                MANUAL_SYNC_COMPLETED_SOUND_KEY,
+                manualSyncSoundChoices[manualSyncSoundSpinner.selectedItemPosition].value
             )
             .apply()
         applyUiMode()
@@ -2213,7 +2245,7 @@ class MainActivity : ComponentActivity() {
         withContext(Dispatchers.IO) {
             client.insertRecords(measurement.toHealthConnectRecords())
         }
-        playOperationCompletedSound()
+        playOperationCompletedSound(loadOperationSoundPreference(DATA_ENTRY_COMPLETED_SOUND_KEY))
         setStatusMessage("バイタルをHealth Connectに登録しました。", floating = true)
         refreshLatestDates()
     }
@@ -2268,7 +2300,7 @@ class MainActivity : ComponentActivity() {
                 listOf(measurement.toHealthConnectRecord(metadataIdPrefix = "manual-weight"))
             )
         }
-        playOperationCompletedSound()
+        playOperationCompletedSound(loadOperationSoundPreference(DATA_ENTRY_COMPLETED_SOUND_KEY))
         setStatusMessage("体重をHealth Connectに登録しました。", floating = true)
         refreshLatestDates()
     }
@@ -2307,7 +2339,7 @@ class MainActivity : ComponentActivity() {
             try {
                 val client = checkedHealthClient(requiredHealthPermissions, permissionTarget) ?: return@launch
                 val resultMessage = withContext(Dispatchers.IO) { sync(client) }
-                playOperationCompletedSound()
+                playOperationCompletedSound(loadOperationSoundPreference(MANUAL_SYNC_COMPLETED_SOUND_KEY))
                 setStatusMessage(resultMessage, floating = true)
                 refreshLatestDates()
             } catch (_: CancellationException) {
@@ -2330,27 +2362,32 @@ class MainActivity : ComponentActivity() {
             .setMaxStreams(1)
             .setAudioAttributes(audioAttributes)
             .build()
-        soundPool.setOnLoadCompleteListener { loadedPool, _, status ->
+        soundPool.setOnLoadCompleteListener { loadedPool, soundId, status ->
             if (loadedPool === soundPool) {
-                medicalRobotSoundLoaded = status == 0
+                if (status == 0) {
+                    loadedOperationSoundIds += soundId
+                } else {
+                    loadedOperationSoundIds -= soundId
+                }
             }
         }
         operationCompletedSoundPool = soundPool
         medicalRobotSoundId = soundPool.load(this, R.raw.medical_robot_success, 1)
+        manualSyncSoundId = soundPool.load(this, R.raw.manual_sync_success, 1)
     }
 
-    private fun playOperationCompletedSound(
-        preference: OperationSoundPreference = loadOperationSoundPreference()
-    ): Boolean {
+    private fun playOperationCompletedSound(preference: OperationSoundPreference): Boolean {
         if (preference == OperationSoundPreference.OFF) {
             return false
         }
-        if (preference == OperationSoundPreference.MEDICAL_ROBOT) {
-            val soundPool = operationCompletedSoundPool
-            val soundId = medicalRobotSoundId
-            if (soundPool != null && soundId != null && medicalRobotSoundLoaded) {
-                return soundPool.play(soundId, 1f, 1f, 1, 0, 1f) != 0
-            }
+        val soundId = when (preference) {
+            OperationSoundPreference.MEDICAL_ROBOT -> medicalRobotSoundId
+            OperationSoundPreference.MANUAL_SYNC_CHIME -> manualSyncSoundId
+            else -> null
+        }
+        val soundPool = operationCompletedSoundPool
+        if (soundPool != null && soundId != null && soundId in loadedOperationSoundIds) {
+            return soundPool.play(soundId, 1f, 1f, 1, 0, 1f) != 0
         }
 
         val toneType = preference.toneType ?: ToneGenerator.TONE_PROP_ACK
@@ -2363,10 +2400,12 @@ class MainActivity : ComponentActivity() {
         }.getOrDefault(false)
     }
 
-    private fun loadOperationSoundPreference(): OperationSoundPreference {
-        val value = getSharedPreferences("notion", Context.MODE_PRIVATE)
-            .getString(OPERATION_COMPLETED_SOUND_KEY, null)
-        return OperationSoundPreference.from(value)
+    private fun loadOperationSoundPreference(preferenceKey: String): OperationSoundPreference {
+        val prefs = getSharedPreferences("notion", Context.MODE_PRIVATE)
+        return OperationSoundPreference.from(
+            prefs.getString(preferenceKey, null),
+            prefs.getString(LEGACY_OPERATION_COMPLETED_SOUND_KEY, null)
+        )
     }
 
     private fun showSyncDialog(message: String) {
@@ -3397,19 +3436,25 @@ internal enum class UiModePreference(val value: String, val label: String) {
 internal enum class OperationSoundPreference(
     val value: String,
     val label: String,
-    val toneType: Int?
+    val toneType: Int?,
+    val manualSyncOnly: Boolean = false
 ) {
     STANDARD("standard", "標準（現在の音）", ToneGenerator.TONE_PROP_ACK),
     BEEP("beep", "ビープ音", ToneGenerator.TONE_PROP_BEEP),
     PROMPT("prompt", "案内音", ToneGenerator.TONE_PROP_PROMPT),
     MEDICAL_ROBOT("medical_robot", "未来感", null),
+    MANUAL_SYNC_CHIME("manual_sync_chime", "同期チャイム（オリジナル）", null, true),
     OFF("off", "再生しない", null);
 
     companion object {
         fun from(value: String?): OperationSoundPreference =
             entries.firstOrNull { it.value == value } ?: STANDARD
 
-        fun indexOf(value: String?): Int = entries.indexOf(from(value))
+        fun from(value: String?, fallbackValue: String?): OperationSoundPreference =
+            from(value ?: fallbackValue)
+
+        fun choicesFor(manualSync: Boolean): List<OperationSoundPreference> =
+            entries.filter { manualSync || !it.manualSyncOnly }
     }
 }
 
@@ -5054,7 +5099,9 @@ private const val STEPS_DIRECTION_KEY = "stepsSyncDirection"
 private const val VITALS_DIRECTION_KEY = "vitalsSyncDirection"
 private const val WEIGHT_DIRECTION_KEY = "weightSyncDirection"
 private const val UI_MODE_KEY = "uiMode"
-private const val OPERATION_COMPLETED_SOUND_KEY = "operationCompletedSound"
+private const val LEGACY_OPERATION_COMPLETED_SOUND_KEY = "operationCompletedSound"
+private const val DATA_ENTRY_COMPLETED_SOUND_KEY = "dataEntryCompletedSound"
+private const val MANUAL_SYNC_COMPLETED_SOUND_KEY = "manualSyncCompletedSound"
 private const val DEFAULT_LOOKBACK_DAYS = 30L
 private const val NOTION_API_VERSION = "2026-03-11"
 private const val NOTION_MAX_REQUEST_ATTEMPTS = 3
