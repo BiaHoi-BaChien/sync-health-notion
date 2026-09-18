@@ -4,8 +4,8 @@ plugins {
 
 import java.util.Properties
 
-val appVersionName = "0.2.11"
-val appVersionCode = 122
+val appVersionName = "0.3"
+val appVersionCode = 124
 val releaseKeystorePropertiesFile = rootProject.file("keystore.properties")
 val releaseKeystoreProperties = Properties().apply {
     if (releaseKeystorePropertiesFile.isFile) {
@@ -80,6 +80,10 @@ androidComponents {
 
 dependencies {
     implementation("androidx.activity:activity-ktx:1.12.0")
+    implementation("androidx.camera:camera-camera2:1.5.3")
+    implementation("androidx.camera:camera-lifecycle:1.5.3")
+    implementation("androidx.camera:camera-view:1.5.3")
+    implementation("com.google.mlkit:text-recognition:16.0.1")
     implementation("androidx.health.connect:connect-client:1.2.0-alpha04")
     implementation("androidx.work:work-runtime-ktx:2.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
