@@ -111,6 +111,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var permissionLauncher: ActivityResultLauncher<Set<String>>
     private lateinit var voicePermissionLauncher: ActivityResultLauncher<String>
     private lateinit var voiceInputLauncher: ActivityResultLauncher<Intent>
+    private lateinit var vitalCameraLauncher: ActivityResultLauncher<Intent>
     private lateinit var statusText: TextView
     private lateinit var stepsPhoneDateText: TextView
     private lateinit var stepsNotionDateText: TextView
@@ -155,6 +156,7 @@ class MainActivity : ComponentActivity() {
     private var latestDateRefreshDialog: Dialog? = null
     private var autoSyncDetailsExpanded = false
     private var manualVitalVoiceInputs: ManualVitalVoiceInputs? = null
+    private var manualVitalEntryDialog: Dialog? = null
     private var manualWeightVoiceInput: EditText? = null
     private var manualVoiceTarget: ManualVoiceTarget? = null
     private var operationCompletedTone: ToneGenerator? = null
@@ -196,13 +198,48 @@ class MainActivity : ComponentActivity() {
                 .orEmpty()
             applyManualVoiceResult(matches)
         }
+        vitalCameraLauncher = registerForActivityResult(
+            ActivityResultContracts.StartActivityForResult()
+        ) { result ->
+            if (result.resultCode != Activity.RESULT_OK) return@registerForActivityResult
+            val data = result.data ?: return@registerForActivityResult
+            val systolic = data.getIntExtra(VitalCameraActivity.EXTRA_SYSTOLIC, 0)
+            val diastolic = data.getIntExtra(VitalCameraActivity.EXTRA_DIASTOLIC, 0)
+            val heartRate = data.getIntExtra(VitalCameraActivity.EXTRA_HEART_RATE, 0)
+            if (systolic !in 1..999 || diastolic !in 1 until systolic || heartRate !in 1..300) {
+                setStatusMessage("カメラの読み取り結果を確認できませんでした。", floating = true)
+                return@registerForActivityResult
+            }
+            val values = listOf(systolic.toString(), diastolic.toString(), heartRate.toString())
+            val inputs = manualVitalVoiceInputs
+            if (inputs == null) {
+                showManualVitalEntryDialog(values)
+            } else {
+                inputs.systolic.setText(values[0])
+                inputs.diastolic.setText(values[1])
+                inputs.heartRate.setText(values[2])
+            }
+        }
         migrateAutoSyncScheduleIfNeeded()
         applyUiMode()
         initializeOperationCompletedSoundPlayer()
         showTopPage()
+        savedInstanceState?.getStringArrayList("manual_vital_draft")?.let {
+            showManualVitalEntryDialog(it)
+        }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        manualVitalVoiceInputs?.let {
+            outState.putStringArrayList("manual_vital_draft", arrayListOf(
+                it.systolic.text.toString(), it.diastolic.text.toString(), it.heartRate.text.toString()
+            ))
+        }
+        super.onSaveInstanceState(outState)
     }
 
     override fun onDestroy() {
+        manualVitalEntryDialog?.dismiss()
         currentSyncJob?.cancel()
         latestDateRefreshJob?.cancel()
         dismissSyncDialog()
@@ -1764,8 +1801,9 @@ class MainActivity : ComponentActivity() {
         voiceDescription: String,
         content: LinearLayout.(ImageButton) -> Unit,
         onRegister: (Dialog) -> Unit,
-        onDismiss: () -> Unit
-    ) {
+        onDismiss: () -> Unit,
+        onCameraInput: (() -> Unit)? = null
+    ): Dialog {
         val density = resources.displayMetrics.density
         lateinit var dialog: Dialog
         val panel = LinearLayout(this).apply {
@@ -1818,6 +1856,21 @@ class MainActivity : ComponentActivity() {
             }
         }
         titleRow.addView(micButton)
+        if (onCameraInput != null) {
+            titleRow.addView(ImageButton(this).apply {
+                contentDescription = "カメラでバイタルを入力"
+                tooltipText = contentDescription
+                setImageResource(R.drawable.ic_camera)
+                background = GradientDrawable().apply {
+                    cornerRadius = 10 * density
+                    setColor(Color.parseColor("#44D7B6"))
+                }
+                layoutParams = LinearLayout.LayoutParams((48 * density).toInt(), (48 * density).toInt()).apply {
+                    leftMargin = (8 * density).toInt()
+                }
+                setOnClickListener { onCameraInput() }
+            })
+        }
         panel.addView(titleRow)
         panel.addView(TextView(this).apply {
             text = description
@@ -1882,6 +1935,7 @@ class MainActivity : ComponentActivity() {
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
         }
+        return dialog
     }
 
     private fun showManualWeightEntryDialog() {
@@ -1925,7 +1979,7 @@ class MainActivity : ComponentActivity() {
         )
     }
 
-    private fun showManualVitalEntryDialog() {
+    private fun showManualVitalEntryDialog(initialValues: List<String> = emptyList()) {
         if (currentSyncJob?.isActive == true) {
             setStatusMessage("同期中はバイタルを登録できません。", floating = true)
             return
@@ -1934,7 +1988,7 @@ class MainActivity : ComponentActivity() {
         lateinit var systolicInput: EditText
         lateinit var diastolicInput: EditText
         lateinit var heartRateInput: EditText
-        showManualEntryDialog(
+        manualVitalEntryDialog = showManualEntryDialog(
             title = "バイタルをHealth Connectに登録",
             description = "測定日時は登録時点の時刻で保存します。",
             voiceDescription = "音声でバイタルを入力",
@@ -1942,6 +1996,10 @@ class MainActivity : ComponentActivity() {
                 systolicInput = addNumberInput("最高血圧")
                 diastolicInput = addNumberInput("最低血圧")
                 heartRateInput = addNumberInput("脈拍")
+                manualVitalVoiceInputs = ManualVitalVoiceInputs(systolicInput, diastolicInput, heartRateInput)
+                systolicInput.setText(initialValues.getOrNull(0).orEmpty())
+                diastolicInput.setText(initialValues.getOrNull(1).orEmpty())
+                heartRateInput.setText(initialValues.getOrNull(2).orEmpty())
                 micButton.setOnClickListener {
                     startManualVitalVoiceInput(
                         ManualVitalVoiceInputs(
@@ -1968,12 +2026,16 @@ class MainActivity : ComponentActivity() {
                 confirmAndRegisterManualVitalToHealthConnect(measurement)
             },
             onDismiss = {
+                manualVitalEntryDialog = null
                 if (manualVitalVoiceInputs?.systolic === systolicInput) {
                     manualVitalVoiceInputs = null
                     if (manualVoiceTarget == ManualVoiceTarget.VITALS) {
                         manualVoiceTarget = null
                     }
                 }
+            },
+            onCameraInput = {
+                vitalCameraLauncher.launch(Intent(this, VitalCameraActivity::class.java))
             }
         )
     }

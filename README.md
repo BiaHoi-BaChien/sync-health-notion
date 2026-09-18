@@ -10,6 +10,7 @@ Each data type can be configured independently as `同期しない`, `HealthConn
 
 - Reads Health Connect step records, aggregates them by day, and writes one daily total row to Notion.
 - Saves manually entered blood pressure and heart rate values to Health Connect at the same measurement time.
+- Reads blood pressure monitor displays with the camera using bundled, on-device OCR, then lets users review and edit the values before registration.
 - Saves manually entered weight values, including voice input rounded to one decimal place, to Health Connect.
 - Lets users independently select or disable completion sounds for successful manual data entry and synchronization, including an original manual-sync chime.
 - Reads Health Connect blood pressure records, pairs heart rate samples recorded at the same time, and creates or updates Notion measurements using the timestamp through the minute as the key.
@@ -25,6 +26,18 @@ Each data type can be configured independently as `同期しない`, `HealthConn
 - Uses the latest 30 days as the sync window for Health Connect step, vital, and weight data.
 - Uses blood pressure as the base vital measurement. Heart-rate-only records are not sent to Notion.
 - Uses the measurement timestamp through the minute as the vital upsert key in both sync directions. Records are skipped when systolic blood pressure, diastolic blood pressure, and heart rate are also unchanged.
+
+## Camera vital input
+
+Open manual vital entry and tap the camera icon. Grant camera access, then fit the three numbers inside the frame in top-to-bottom order: systolic blood pressure, diastolic blood pressure, and pulse. Keep dates, times, and memory numbers outside the frame. Tap `読み取る`, compare the frozen image and recognized values, then tap `入力欄に反映`. Review or correct the values and tap `Health Connectに登録` as usual. The measurement time remains the time of registration.
+
+This first version supports monitors with one vertical column of three numbers. Missing, extra, split, or ambiguous numbers require a retry or manual/voice input. Seven-segment displays, glare, and angled or blurred images may not be recognized; accuracy must be checked with the actual monitor. Camera denial, cancellation, or recognition failure does not register any measurements.
+
+Only known labels and units (such as `SYS`, `DIA`, `PUL`, and `mmHg`) are ignored. Other text inside the frame causes recognition to fail, so a digit misread as a separate letter is not silently dropped.
+
+The OCR model is bundled in the APK and works offline from the first use. Camera images are processed in memory, are not saved, and are not sent to OpenAI, Notion, or another image-recognition service. Notion synchronization still requires a network connection. Existing synchronization directions and registration checks are unchanged.
+
+Device verification: check the first read in airplane mode, camera permission denial and later grant, cancellation with existing input values, portrait/landscape rotation, enlarged text, retry after recognition failure, and actual monitor readings under different lighting. Returning from the camera must only fill the input fields; Health Connect registration still requires its registration button.
 
 ## Notion data source requirements
 
