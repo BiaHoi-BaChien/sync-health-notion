@@ -28,6 +28,17 @@ class SecurityRemediationTest {
     }
 
     @Test
+    fun validatesNotionStepsAgainstHealthConnectConstraints() {
+        assertEquals(1L, notionStepCountOrNull(1.0))
+        assertEquals(1_000_000L, notionStepCountOrNull(1_000_000.0))
+        assertNull(notionStepCountOrNull(0.0))
+        assertNull(notionStepCountOrNull(1_000_001.0))
+        assertNull(notionStepCountOrNull(1.5))
+        assertNull(notionStepCountOrNull(Double.NaN))
+        assertNull(notionStepCountOrNull(Double.POSITIVE_INFINITY))
+    }
+
+    @Test
     fun acceptsNotionVitalsWithinHealthConnectConstraints() {
         val lowerBoundary = notionVitalMeasurementOrNull(
             measuredAt = measuredAt,
@@ -119,6 +130,9 @@ class SecurityRemediationTest {
             },
             assertThrows(NotionSyncDataException::class.java) {
                 validateNotionMeasurementPage(1, 100, 101, false, null, emptySet(), 2, 200)
+            },
+            assertThrows(NotionSyncDataException::class.java) {
+                validateNotionMeasurementPage(1, 100, 100, true, "cursor-2", setOf("cursor-1"), 2, 200)
             },
             assertThrows(NotionSyncDataException::class.java) {
                 validateNotionMeasurementPage(1, 0, 100, true, "cursor-1", setOf("cursor-1"), 2, 200)

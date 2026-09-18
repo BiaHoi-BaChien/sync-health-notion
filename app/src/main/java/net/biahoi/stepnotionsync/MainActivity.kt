@@ -4351,6 +4351,9 @@ internal fun <T> Iterable<T>.ownedByApplication(
     isOwnedHealthConnectRecord(recordPackageName(record), applicationPackageName)
 }
 
+internal fun notionStepCountOrNull(steps: Double): Long? =
+    steps.takeIf { it.isFinite() && it in 1.0..1_000_000.0 && it % 1.0 == 0.0 }?.toLong()
+
 internal fun notionVitalMeasurementOrNull(
     measuredAt: Instant,
     systolic: Double,
@@ -4653,7 +4656,7 @@ private class NotionClient(private val config: SyncConfig) {
     fun latestWeightDate(lookbackDays: Long): NotionDateValue? =
         latestDateInSyncWindow(validDataSourceId(config.weightDataSourceId), config.weightMeasuredAtProperty, lookbackDays)
 
-    fun readStepPagesByDate(lookbackDays: Long): Map<LocalDate, NotionStepPage> {
+    suspend fun readStepPagesByDate(lookbackDays: Long): Map<LocalDate, NotionStepPage> {
         return readDatePagesByDate(
             dataSourceId = validDataSourceId(config.stepsDataSourceId),
             dateProperty = config.stepsDateProperty,
@@ -4661,7 +4664,7 @@ private class NotionClient(private val config: SyncConfig) {
         )
     }
 
-    fun readStepMeasurements(lookbackDays: Long): List<DailyStepMeasurement> =
+    suspend fun readStepMeasurements(lookbackDays: Long): List<DailyStepMeasurement> =
         readStepPagesByDate(lookbackDays).mapNotNull { (date, page) ->
             val recordedAt = page.recordedAt ?: return@mapNotNull null
             val steps = page.steps ?: return@mapNotNull null
@@ -4958,7 +4961,7 @@ private class NotionClient(private val config: SyncConfig) {
         return latestStart?.toNotionDateValue()
     }
 
-    private fun readDatePagesByDate(
+    private suspend fun readDatePagesByDate(
         dataSourceId: String,
         dateProperty: String,
         lookbackDays: Long
@@ -4969,8 +4972,13 @@ private class NotionClient(private val config: SyncConfig) {
         val end = today.plusDays(1).atStartOfDay(zone).toInstant().toNotionDateTime()
         val pages = mutableMapOf<LocalDate, NotionStepPage>()
         var cursor: String? = null
+        var pageNumber = 0
+        var totalRowCount = 0
+        val seenCursors = mutableSetOf<String>()
 
         do {
+            coroutineContext.ensureActive()
+            pageNumber++
             val body = JSONObject()
                 .put(
                     "filter",
@@ -4987,6 +4995,15 @@ private class NotionClient(private val config: SyncConfig) {
             val response = request("POST", "https://api.notion.com/v1/data_sources/$dataSourceId/query", body)
             ensureCompleteQuery(response)
             val results = response.optJSONArray("results") ?: JSONArray()
+            val nextCursor = validateNotionMeasurementPage(
+                pageNumber = pageNumber,
+                currentRowCount = totalRowCount,
+                pageRowCount = results.length(),
+                hasMore = response.optBoolean("has_more"),
+                nextCursor = response.optString("next_cursor"),
+                seenCursors = seenCursors
+            )
+            totalRowCount += results.length()
             for (i in 0 until results.length()) {
                 val page = results.optJSONObject(i) ?: continue
                 val value = page
@@ -5001,15 +5018,14 @@ private class NotionClient(private val config: SyncConfig) {
                 val steps = page
                     .optJSONObject("properties")
                     ?.notionNumber(config.stepsProperty)
-                    ?.toLong()
+                    ?.let(::notionStepCountOrNull)
                 val existing = pages[value.date]
                 if (existing == null || notionTimestampSortValue(existing.recordedAt) < notionTimestampSortValue(value.timestamp)) {
                     pages[value.date] = NotionStepPage(id = pageId, recordedAt = value.timestamp, steps = steps)
                 }
             }
-            cursor = response.optString("next_cursor").takeIf {
-                response.optBoolean("has_more") && it.isNotBlank()
-            }
+            cursor = nextCursor
+            cursor?.let { seenCursors.add(it) }
         } while (cursor != null)
 
         return pages
