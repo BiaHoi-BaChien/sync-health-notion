@@ -12,7 +12,7 @@ Each data type can be configured independently as `同期しない`, `HealthConn
 - Saves manually entered blood pressure and heart rate values to Health Connect at the same measurement time.
 - Reads blood pressure monitor displays with the camera using bundled, on-device OCR, then lets users review and edit the values before registration.
 - Saves manually entered weight values, including voice input rounded to one decimal place, to Health Connect.
-- Lets users select or disable the completion sound for successful manual data entry and synchronization.
+- Lets users independently select or disable completion sounds for successful manual data entry and synchronization, including an original manual-sync chime.
 - Reads Health Connect blood pressure records, pairs heart rate samples recorded at the same time, and creates or updates Notion measurements using the timestamp through the minute as the key.
 - Reads Health Connect weight records from all data origins and writes the latest 30 days to Notion in kilograms.
 - Keeps Notion step rows to one row per day, using the day's latest Health Connect step record time as the Notion date time.
