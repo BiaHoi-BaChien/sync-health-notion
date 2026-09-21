@@ -34,6 +34,7 @@ import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.TextRecognizer
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import java.util.concurrent.Executors
 
 class VitalCameraActivity : ComponentActivity() {
     private lateinit var previewView: PreviewView
@@ -46,6 +47,7 @@ class VitalCameraActivity : ComponentActivity() {
     private var startingCamera = false
     private var recognizing = false
     private var recognizer: TextRecognizer? = null
+    private val recognitionExecutor = Executors.newSingleThreadExecutor()
     private var capturedFrame: Bitmap? = null
     private var reading: VitalCameraReading? = null
 
@@ -197,16 +199,31 @@ class VitalCameraActivity : ComponentActivity() {
         try {
             val textRecognizer = recognizer ?: TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS).also { recognizer = it }
             textRecognizer.process(InputImage.fromBitmap(cropped, 0))
+                .continueWith(recognitionExecutor) { task ->
+                    val elements = if (task.isSuccessful) task.result.textBlocks.flatMap { it.lines }.flatMap { it.elements } else emptyList()
+                    // A numeric element without geometry must not be silently dropped.
+                    if (elements.any { it.boundingBox == null }) return@continueWith null
+                    val positioned = elements.map { element ->
+                        val box = checkNotNull(element.boundingBox)
+                        VitalOcrElement(element.text, box.left, box.top, box.right, box.bottom)
+                    }
+                    val ocr = parseVitalCameraReading(positioned)
+                    if (!allowsSevenSegmentFallback(positioned)) return@continueWith ocr
+                    val scale = minOf(1.0, 640.0 / maxOf(cropped.width, cropped.height))
+                    val scaled = Bitmap.createScaledBitmap(cropped, maxOf(1, (cropped.width * scale).toInt()),
+                        maxOf(1, (cropped.height * scale).toInt()), true)
+                    val segments = try {
+                        val pixels = IntArray(scaled.width * scaled.height)
+                        scaled.getPixels(pixels, 0, scaled.width, 0, 0, scaled.width, scaled.height)
+                        readSevenSegmentVitals(pixels, scaled.width, scaled.height)
+                    } finally {
+                        if (scaled !== cropped) scaled.recycle()
+                    }
+                    selectVitalCameraReading(ocr, segments)
+                }
                 .addOnSuccessListener { result ->
                     if (isDestroyed || isFinishing) return@addOnSuccessListener
-                    val elements = result.textBlocks.flatMap { it.lines }.flatMap { it.elements }
-                    // A numeric element without geometry must not be silently dropped.
-                    reading = if (elements.any { it.boundingBox == null }) null else parseVitalCameraReading(
-                        elements.map { element ->
-                            val box = checkNotNull(element.boundingBox)
-                            VitalOcrElement(element.text, box.left, box.top, box.right, box.bottom)
-                        }
-                    )
+                    reading = result
                     val value = reading
                     statusText.text = if (value == null) {
                         "3つの数字を確定できませんでした。反射や傾きを避け、数字だけを枠に合わせて読み取り直してください。"
@@ -220,7 +237,7 @@ class VitalCameraActivity : ComponentActivity() {
                 }
                 .addOnCompleteListener {
                     cropped.recycle()
-                    if (!isDestroyed && !isFinishing) finishRecognition()
+                    if (isDestroyed || isFinishing) recognitionExecutor.shutdown() else finishRecognition()
                 }
         } catch (_: Exception) {
             cropped.recycle()
@@ -268,6 +285,8 @@ class VitalCameraActivity : ComponentActivity() {
     override fun onDestroy() {
         preview?.let { provider?.unbind(it) }
         recognizer?.close()
+        // An OCR task may still need to dispatch its pixel continuation after cancellation.
+        if (!recognizing) recognitionExecutor.shutdown()
         frozenView.setImageDrawable(null)
         capturedFrame?.recycle()
         super.onDestroy()
