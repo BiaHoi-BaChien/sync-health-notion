@@ -39,6 +39,8 @@ If the first pixel pass detects no reading, a horizontal background estimate red
 
 Narrow connected strokes at the crop edge are checked before discarding thin columns. Clipped digits, including fragments joined to a frame line, require a retry and cannot be overridden by OCR. Frame bounds are not erased because they can contain a remaining digit stroke. Isolated speckles do not block a complete reading.
 
+Fully decoded extra numeric rows or invalid values are kept as uncertain, so OCR cannot replace them with three plausible values. An extra band from a casing shadow is not treated as a numeric row unless its digits can be decoded.
+
 Local photo regression: the framed screenshot (`Screenshot_20260921-193044.png`) is recognized as `110 / 74`, pulse `77`, at both 480 and 640 pixels. The previously accepted crop of `PXL_20260918_154909527.jpg` now requires reframing: its thin LCD edge cannot be distinguished from a clipped digit. The strong-glare photo (`PXL_20260918_154908396.jpg`) still returns no result. These are JVM pixel-reader checks, not a device-camera or ML Kit end-to-end check. Personal photos are excluded from the repository. To run the optional photo regression, set `VITAL_CAMERA_TEST_IMAGE_DIR` to a local directory containing all three files before running `testDebugUnitTest`; it is skipped when the variable is unset.
 
 The OCR model is bundled in the APK and works offline from the first use. Camera images are processed in memory, are not saved, and are not sent to OpenAI, Notion, or another image-recognition service. Notion synchronization still requires a network connection. Existing synchronization directions and registration checks are unchanged.

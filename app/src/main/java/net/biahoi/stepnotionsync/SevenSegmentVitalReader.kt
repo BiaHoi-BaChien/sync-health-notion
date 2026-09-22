@@ -84,8 +84,11 @@ private fun readSegmentContrasts(
         // Keep the ink: erasing a frame's bounds can erase a digit attached to it as well.
         val edgeComponents = segmentComponents(mask, width, height).filter { it.left == 0 || it.right == width }
         val boxes = projectedDigitBoxes(mask, width, height, closeRows, edgeComponents) ?: return SevenSegmentVitalResult.Uncertain
-        val reading = readSegmentRows(mask, width, boxes)
-        if (reading != null) readings.add(reading)
+        when (val result = readSegmentRows(mask, width, boxes)) {
+            is SevenSegmentVitalResult.Recognized -> readings.add(result.reading)
+            SevenSegmentVitalResult.Uncertain -> return result
+            SevenSegmentVitalResult.NotDetected -> Unit
+        }
     }
     // Multiple contrast levels must agree; never choose between conflicting complete readings.
     return when {
@@ -96,7 +99,7 @@ private fun readSegmentContrasts(
     }
 }
 
-/** Null means a substantial fragment was found in a digit row; it must not be dropped as noise. */
+/** Null means conflicting digit evidence was found; it must not be dropped as noise. */
 private fun projectedDigitBoxes(
     mask: BooleanArray, width: Int, height: Int, closeRows: Boolean, edgeComponents: List<SegmentBox>
 ): List<SegmentBox>? {
@@ -126,13 +129,27 @@ private fun projectedDigitBoxes(
         }
         if (closeRows && joins.isEmpty()) break
         val ambiguousJoin = if (closeRows) joins.zipWithNext().any { (a, b) -> b == a + 1 } else joins.size != 1
-        if (ambiguousJoin) return emptyList()
+        if (ambiguousJoin) {
+            if (rows.size <= 3) return emptyList()
+            break
+        }
         val index = joins.first()
         rows[index] = rows[index].first..rows[index + 1].last
         rows.removeAt(index + 1)
     }
     // Join a small pulse's separated upper/lower strokes before removing short noise rows.
     if (closeRows) rows.removeAll { it.count() < height / 12 }
+    if (rows.size > 3) {
+        // Casing shadows can resemble an extra row. Require complete digit evidence
+        // before blocking OCR, without applying partial-digit guards to that noise.
+        val boxes = rows.flatMap { row ->
+            val vertical = IntArray(width) { x -> row.count { y -> mask[y * width + x] } }
+            spans(vertical, max(3, (row.count() * 0.06).toInt()), 3).map { column ->
+                SegmentBox(column.first, row.first, column.last + 1, row.last + 1)
+            }
+        }
+        return if (readSegmentRows(mask, width, boxes) == SevenSegmentVitalResult.Uncertain) null else emptyList()
+    }
     if (rows.size != 3) return emptyList()
     return rows.flatMap { row ->
         val vertical = IntArray(width) { x -> row.count { y -> mask[y * width + x] } }
@@ -195,23 +212,25 @@ private data class SegmentBox(val left: Int, val top: Int, val right: Int, val b
     val centerY get() = (top + bottom) / 2
 }
 
-private fun readSegmentRows(mask: BooleanArray, width: Int, boxes: List<SegmentBox>): VitalCameraReading? {
-    if (boxes.size !in 3..9) return null
+private fun readSegmentRows(mask: BooleanArray, width: Int, boxes: List<SegmentBox>): SevenSegmentVitalResult {
+    if (boxes.size < 3) return SevenSegmentVitalResult.NotDetected
     val rows = mutableListOf<MutableList<SegmentBox>>()
     for (box in boxes.sortedBy { it.centerY }) {
         val row = rows.lastOrNull()
         if (row != null && box.centerY - row.first().centerY < min(box.height, row.first().height) / 2) row.add(box)
         else rows.add(mutableListOf(box))
     }
-    if (rows.size != 3) return null
+    if (rows.size < 3) return SevenSegmentVitalResult.NotDetected
     val elements = rows.map { row ->
         val ordered = row.sortedBy { it.left }
-        if (row.size !in 1..3 || row.maxOf { it.height } > row.minOf { it.height } * 1.35) return null
-        if (ordered.zipWithNext().any { (a, b) -> b.left < a.right || b.left - a.right > max(a.height, b.height) * 0.95 }) return null
-        val digits = ordered.map { readSegmentDigit(mask, width, it) ?: return null }.joinToString("")
+        if (row.maxOf { it.height } > row.minOf { it.height } * 1.35) return SevenSegmentVitalResult.NotDetected
+        if (ordered.zipWithNext().any { (a, b) -> b.left < a.right || b.left - a.right > max(a.height, b.height) * 0.95 }) return SevenSegmentVitalResult.NotDetected
+        val digits = ordered.map { readSegmentDigit(mask, width, it) ?: return SevenSegmentVitalResult.NotDetected }.joinToString("")
         VitalOcrElement(digits, row.minOf { it.left }, row.minOf { it.top }, row.maxOf { it.right }, row.maxOf { it.bottom })
     }
-    return parseVitalCameraReading(elements)
+    // Fully decoded but invalid rows/values contradict OCR; they are not a missed detection.
+    return parseVitalCameraReading(elements)?.let { SevenSegmentVitalResult.Recognized(it) }
+        ?: SevenSegmentVitalResult.Uncertain
 }
 
 private fun readSegmentDigit(mask: BooleanArray, width: Int, box: SegmentBox): Int? {

@@ -156,7 +156,36 @@ class SevenSegmentVitalReaderTest {
     @Test
     fun doesNotDiscardFourthRowBesideSmallFaintPulse() {
         val pixels = display(listOf("110", "74", "77", "18"), compact = true)
-        assertNull(selectVitalCameraReading(null, readSevenSegmentVitals(pixels, WIDTH, HEIGHT)))
+        val segments = readSevenSegmentVitals(pixels, WIDTH, HEIGHT)
+        assertEquals(SevenSegmentVitalResult.Uncertain, segments)
+        assertNull(selectVitalCameraReading(null, segments))
+        assertNull(selectVitalCameraReading(VitalCameraReading(110, 74, 77), segments))
+    }
+
+    @Test
+    fun extraDigitRowCannotBeOverriddenByOcr() {
+        for (compact in listOf(false, true)) for (values in listOf(
+            listOf("120", "80", "65", "18"), listOf("250", "160", "65", "202")
+        )) {
+            val pixels = display(values, compact)
+            val segments = readSevenSegmentVitals(pixels, WIDTH, HEIGHT)
+            assertEquals("compact=$compact values=$values", SevenSegmentVitalResult.Uncertain, segments)
+            assertNull(selectVitalCameraReading(null, segments))
+            // OCR can omit the date/memory row while finding three otherwise valid values.
+            assertNull(selectVitalCameraReading(VitalCameraReading(values[0].toInt(), values[1].toInt(), values[2].toInt()), segments))
+        }
+    }
+
+    @Test
+    fun fullyDecodedInvalidValuesCannotBeOverriddenByOcr() {
+        for (compact in listOf(false, true)) {
+            for (values in listOf(listOf("80", "120", "65"), listOf("120", "80", "301"))) {
+                val segments = readSevenSegmentVitals(display(values, compact), WIDTH, HEIGHT)
+                assertEquals("compact=$compact values=$values", SevenSegmentVitalResult.Uncertain, segments)
+                assertNull(selectVitalCameraReading(null, segments))
+                assertNull(selectVitalCameraReading(VitalCameraReading(120, 80, 65), segments))
+            }
+        }
     }
 
     private fun display(rows: List<String>, compact: Boolean = false): IntArray {
