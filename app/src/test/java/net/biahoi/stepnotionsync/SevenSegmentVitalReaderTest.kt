@@ -65,8 +65,108 @@ class SevenSegmentVitalReaderTest {
         assertNull(selectVitalCameraReading(null, segments))
     }
 
-    private fun display(rows: List<String>): IntArray {
+    @Test
+    fun readsCloseRowsWithHorizontalFrameAndSmallFaintPulse() {
+        val pixels = display(listOf("110", "74", "77"), compact = true)
+        assertEquals(SevenSegmentVitalResult.Recognized(VitalCameraReading(110, 74, 77)),
+            readSevenSegmentVitals(pixels, WIDTH, HEIGHT))
+    }
+
+    @Test
+    fun doesNotDropPartialLeadingDigitInCloseRows() {
+        val pixels = display(listOf("180", "60", "65"), compact = true)
+        assertEquals(SevenSegmentVitalResult.Recognized(VitalCameraReading(180, 60, 65)),
+            readSevenSegmentVitals(pixels, WIDTH, HEIGHT))
+        for (y in 70 until 125) for (x in 78 until 108) pixels[y * WIDTH + x] = 0xffaaaaaa.toInt()
+        val segments = readSevenSegmentVitals(pixels, WIDTH, HEIGHT)
+        assertEquals(SevenSegmentVitalResult.Uncertain, segments)
+        assertNull(selectVitalCameraReading(VitalCameraReading(80, 60, 65), segments))
+    }
+
+    @Test
+    fun rejectsNarrowLeadingDigitFragmentsAtFrameEdge() {
+        for (compact in listOf(false, true)) {
+            val original = display(listOf("180", "60", "65"), compact)
+            for (shift in listOf(98, 100, 102, 103)) {
+                val pixels = IntArray(WIDTH * HEIGHT) { 0xffaaaaaa.toInt() }
+                for (y in 0 until HEIGHT) {
+                    original.copyInto(pixels, y * WIDTH, y * WIDTH + shift, (y + 1) * WIDTH)
+                }
+                // The leading 1 still has a 2..7 px wide stroke touching the left edge.
+                val segments = readSevenSegmentVitals(pixels, WIDTH, HEIGHT)
+                assertEquals("compact=$compact shift=$shift", SevenSegmentVitalResult.Uncertain, segments)
+                assertNull(selectVitalCameraReading(null, segments))
+                assertNull(selectVitalCameraReading(VitalCameraReading(80, 60, 65), segments))
+            }
+        }
+    }
+
+    @Test
+    fun rejectsNarrowTrailingFragmentsAtFrameEdge() {
+        for (compact in listOf(false, true)) for (fragmentWidth in listOf(1, 3, 7)) {
+            val pixels = display(listOf("180", "60", "65"), compact)
+            for (y in 32 until 68) for (x in WIDTH - fragmentWidth until WIDTH) {
+                pixels[y * WIDTH + x] = 0xff222222.toInt()
+            }
+            val segments = readSevenSegmentVitals(pixels, WIDTH, HEIGHT)
+            assertEquals("compact=$compact width=$fragmentWidth", SevenSegmentVitalResult.Uncertain, segments)
+            assertNull(selectVitalCameraReading(null, segments))
+            assertNull(selectVitalCameraReading(VitalCameraReading(180, 60, 65), segments))
+        }
+    }
+
+    @Test
+    fun rejectsLeadingDigitFragmentsConnectedToFrameLine() {
+        for (compact in listOf(false, true)) for (shift in listOf(94, 96, 98, 100, 102, 103)) {
+            val original = display(listOf("180", "60", "65"), compact)
+            for (lineWidth in listOf(1, 2, 3, 6)) {
+                val pixels = IntArray(WIDTH * HEIGHT) { 0xffaaaaaa.toInt() }
+                for (y in 0 until HEIGHT) original.copyInto(pixels, y * WIDTH, y * WIDTH + shift, (y + 1) * WIDTH)
+                // A long LCD edge must not hide an attached fragment of the leading 1.
+                for (y in 20 until 400) for (x in 0 until lineWidth) pixels[y * WIDTH + x] = 0xff222222.toInt()
+                val segments = readSevenSegmentVitals(pixels, WIDTH, HEIGHT)
+                assertEquals("compact=$compact shift=$shift line=$lineWidth", SevenSegmentVitalResult.Uncertain, segments)
+                assertNull(selectVitalCameraReading(null, segments))
+                assertNull(selectVitalCameraReading(VitalCameraReading(80, 60, 65), segments))
+            }
+        }
+    }
+
+    @Test
+    fun stillReadsCompleteLeadingDigitNearFrameEdge() {
+        for (compact in listOf(false, true)) {
+            val original = display(listOf("180", "60", "65"), compact)
+            val pixels = IntArray(WIDTH * HEIGHT) { 0xffaaaaaa.toInt() }
+            for (y in 0 until HEIGHT) original.copyInto(pixels, y * WIDTH, y * WIDTH + 80, (y + 1) * WIDTH)
+            assertEquals("compact=$compact", SevenSegmentVitalResult.Recognized(VitalCameraReading(180, 60, 65)),
+                readSevenSegmentVitals(pixels, WIDTH, HEIGHT))
+        }
+    }
+
+    @Test
+    fun stillIgnoresSparseEdgeSpeckles() {
+        for (compact in listOf(false, true)) {
+            val pixels = display(listOf("180", "60", "65"), compact)
+            for (y in 20..120 step 20) for (x in listOf(0, WIDTH - 1)) pixels[y * WIDTH + x] = 0xff222222.toInt()
+            assertEquals("compact=$compact", SevenSegmentVitalResult.Recognized(VitalCameraReading(180, 60, 65)),
+                readSevenSegmentVitals(pixels, WIDTH, HEIGHT))
+        }
+    }
+
+    @Test
+    fun doesNotDiscardFourthRowBesideSmallFaintPulse() {
+        val pixels = display(listOf("110", "74", "77", "18"), compact = true)
+        assertNull(selectVitalCameraReading(null, readSevenSegmentVitals(pixels, WIDTH, HEIGHT)))
+    }
+
+    private fun display(rows: List<String>, compact: Boolean = false): IntArray {
         val pixels = IntArray(WIDTH * HEIGHT) { 0xffaaaaaa.toInt() }
+        if (compact) {
+            // Full-width LCD edges and an eight-pixel blood-pressure row gap.
+            for (y in (4 until 12) + (432 until 440)) for (x in 0 until WIDTH) {
+                pixels[y * WIDTH + x] = 0xff222222.toInt()
+            }
+        }
         val digits = mapOf('0' to "abcdef", '1' to "bc", '2' to "abdeg", '3' to "abcdg", '4' to "bcfg",
             '5' to "acdfg", '6' to "acdefg", '7' to "abc", '8' to "abcdefg", '9' to "abcdfg")
         val segments = mapOf(
@@ -77,13 +177,23 @@ class SevenSegmentVitalReaderTest {
         )
         for ((row, value) in rows.withIndex()) for ((column, digit) in value.withIndex()) {
             val left = 30 + (3 - value.length + column) * 85
-            val top = 20 + row * 135
-            for (segment in digits.getValue(digit)) {
-                val box = segments.getValue(segment)
+            val top = if (compact) listOf(20, 130, 248, 330)[row] else 20 + row * 135
+            val scale = if (compact && row >= 2) 2.0 / 3 else 1.0
+            val color = if (compact && row >= 2) 0xff666666.toInt() else 0xff222222.toInt()
+            // Microlife's 7 also lights the upper-left segment.
+            val litSegments = if (compact && digit == '7') "abcf" else digits.getValue(digit)
+            for (segment in litSegments) {
+                val box = segments.getValue(segment).copyOf()
+                // LCD vertical strokes reach the baseline even without a bottom segment.
+                if (compact && segment in "ce") box[3] = 102
+                if (compact && row >= 2 && segment in "bcef") {
+                    // Preserve the visibly thick strokes of the smaller pulse digits.
+                    if (segment in "bc") box[0] = 44 else box[2] = 16
+                }
                 for (y in box[1] until box[3]) for (x in box[0] until box[2]) {
-                    val px = left + x + (102 - y) / 6
-                    val py = top + y
-                    if (py < HEIGHT) pixels[py * WIDTH + px] = 0xff222222.toInt()
+                    val px = (275 + (left + x + (102 - y) / 6 - 275) * scale).toInt()
+                    val py = top + (y * scale).toInt()
+                    if (py < HEIGHT) pixels[py * WIDTH + px] = color
                 }
             }
         }

@@ -44,18 +44,46 @@ internal fun readSevenSegmentVitals(pixels: IntArray, width: Int, height: Int): 
         val sum = integral[y1 * stride + x1] - integral[y0 * stride + x1] - integral[y1 * stride + x0] + integral[y0 * stride + x0]
         contrast[y * width + x] = sum / ((x1 - x0) * (y1 - y0)) - gray[y * width + x]
     }
-    val readings = mutableListOf<VitalCameraReading>()
     val thresholds = listOf(0.14, 0.17, 0.20, 0.23, 0.26)
         .map { max(6, ((background - dark) * it).toInt()) }.distinct()
-    for (threshold in thresholds) {
-        val mask = BooleanArray(gray.size) { contrast[it] >= threshold }
-        // A narrow frame edge can extend across several number rows.
-        for (box in segmentComponents(mask, width, height)) {
-            if (box.width < width / 10 && box.height > height * 0.35 && (box.left == 0 || box.right == width)) {
-                for (y in box.top until box.bottom) for (x in box.left until box.right) mask[y * width + x] = false
-            }
+    val result = readSegmentContrasts(contrast, width, height, thresholds, closeRows = false)
+    // Never override a complete reading or uncertainty from the original detector.
+    if (result != SevenSegmentVitalResult.NotDetected) return result
+    return readSegmentContrasts(horizontalSegmentContrast(gray, width, height), width, height,
+        (thresholds.first()..thresholds.last()).toList(), closeRows = true)
+}
+
+/** A horizontal background estimate excludes bright casing above/below the LCD. */
+private fun horizontalSegmentContrast(gray: IntArray, width: Int, height: Int): IntArray {
+    val contrast = IntArray(gray.size)
+    val radius = max(8, width / 6)
+    for (y in 0 until height) {
+        val histogram = IntArray(256)
+        var left = 0
+        var right = 0
+        for (x in 0 until width) {
+            val x0 = max(0, x - radius)
+            val x1 = min(width, x + radius + 1)
+            while (left < x0) histogram[gray[y * width + left++]]--
+            while (right < x1) histogram[gray[y * width + right++]]++
+            var count = 0
+            // The mean is pulled down by adjacent dark segments, hiding a faint stroke.
+            val background = histogram.indices.first { count += histogram[it]; count >= (x1 - x0) * 0.75 }
+            contrast[y * width + x] = background - gray[y * width + x]
         }
-        val boxes = projectedDigitBoxes(mask, width, height) ?: return SevenSegmentVitalResult.Uncertain
+    }
+    return contrast
+}
+
+private fun readSegmentContrasts(
+    contrast: IntArray, width: Int, height: Int, thresholds: List<Int>, closeRows: Boolean
+): SevenSegmentVitalResult {
+    val readings = mutableListOf<VitalCameraReading>()
+    for (threshold in thresholds) {
+        val mask = BooleanArray(contrast.size) { contrast[it] >= threshold }
+        // Keep the ink: erasing a frame's bounds can erase a digit attached to it as well.
+        val edgeComponents = segmentComponents(mask, width, height).filter { it.left == 0 || it.right == width }
+        val boxes = projectedDigitBoxes(mask, width, height, closeRows, edgeComponents) ?: return SevenSegmentVitalResult.Uncertain
         val reading = readSegmentRows(mask, width, boxes)
         if (reading != null) readings.add(reading)
     }
@@ -63,12 +91,15 @@ internal fun readSevenSegmentVitals(pixels: IntArray, width: Int, height: Int): 
     return when {
         readings.distinct().size > 1 -> SevenSegmentVitalResult.Uncertain
         readings.size >= 2 -> SevenSegmentVitalResult.Recognized(readings.first())
+        readings.isNotEmpty() -> SevenSegmentVitalResult.Uncertain
         else -> SevenSegmentVitalResult.NotDetected
     }
 }
 
 /** Null means a substantial fragment was found in a digit row; it must not be dropped as noise. */
-private fun projectedDigitBoxes(mask: BooleanArray, width: Int, height: Int): List<SegmentBox>? {
+private fun projectedDigitBoxes(
+    mask: BooleanArray, width: Int, height: Int, closeRows: Boolean, edgeComponents: List<SegmentBox>
+): List<SegmentBox>? {
     fun spans(values: IntArray, minimum: Int, gap: Int): List<IntRange> {
         val active = values.indices.filter { values[it] >= minimum }
         if (active.isEmpty()) return emptyList()
@@ -83,24 +114,63 @@ private fun projectedDigitBoxes(mask: BooleanArray, width: Int, height: Int): Li
         return result
     }
     val horizontal = IntArray(height) { y -> (0 until width).count { x -> mask[y * width + x] } }
-    val rows = spans(horizontal, max(8, (horizontal.max() * 0.16).toInt()), max(2, height / 42))
-        .filter { it.last - it.first >= height / 12 }.toMutableList()
+    val minimum = if (closeRows) max(8, min((width * 0.075).toInt(), (horizontal.max() * 0.25).toInt()))
+        else max(8, (horizontal.max() * 0.16).toInt())
+    val rows = spans(horizontal, minimum, max(2, height / (if (closeRows) 120 else 42)))
+        .filter { it.last - it.first >= height / (if (closeRows) 30 else 12) }.toMutableList()
     val tallest = rows.maxOfOrNull { it.count() } ?: return emptyList()
-    while (rows.size > 3) {
+    while (closeRows || rows.size > 3) {
         val joins = (0 until rows.lastIndex).filter { index ->
-            rows[index + 1].first - rows[index].last < tallest * 0.15 &&
-                rows[index + 1].last - rows[index].first < tallest * 1.10
+            rows[index + 1].first - rows[index].last < tallest * (if (closeRows) 0.25 else 0.15) &&
+                rows[index + 1].last - rows[index].first < tallest * (if (closeRows) 1.30 else 1.10)
         }
-        if (joins.size != 1) return emptyList()
-        val index = joins.single()
+        if (closeRows && joins.isEmpty()) break
+        val ambiguousJoin = if (closeRows) joins.zipWithNext().any { (a, b) -> b == a + 1 } else joins.size != 1
+        if (ambiguousJoin) return emptyList()
+        val index = joins.first()
         rows[index] = rows[index].first..rows[index + 1].last
         rows.removeAt(index + 1)
     }
+    // Join a small pulse's separated upper/lower strokes before removing short noise rows.
+    if (closeRows) rows.removeAll { it.count() < height / 12 }
     if (rows.size != 3) return emptyList()
     return rows.flatMap { row ->
         val vertical = IntArray(width) { x -> row.count { y -> mask[y * width + x] } }
-        spans(vertical, max(3, (row.count() * 0.06).toInt()), 3).mapNotNull { column ->
-            if (column.count() < max(3, row.count() / 12)) return@mapNotNull null
+        val columns = spans(vertical, max(3, (row.count() * 0.06).toInt()), 3)
+        val minimumWidth = max(3, row.count() / 12)
+        // A stroke attached to a frame widens the edge abruptly and persists vertically.
+        // Detect it before a wide column can be discarded as a continuous frame line.
+        for (edge in listOf(0, width - 1)) {
+            val direction = if (edge == 0) 1 else -1
+            var previous = 0
+            for (y in row) {
+                var extent = 0
+                while (extent < width && mask[y * width + edge + extent * direction]) extent++
+                if (previous > 0 && extent - previous >= 3) {
+                    val x = edge + previous * direction
+                    var end = y
+                    while (end <= row.last && mask[end * width + x]) end++
+                    if (end - y >= minimumWidth && end - y < row.count() * 0.65) return null
+                }
+                previous = extent
+            }
+        }
+        // Check connected edge strokes before projection can discard them as narrow noise.
+        for (component in edgeComponents) {
+            if (component.width >= minimumWidth || component.height < max(3, row.count() / 20) ||
+                component.height < component.width * 2 ||
+                component.bottom <= row.first || component.top > row.last) continue
+            if (columns.any { it.count() >= minimumWidth && component.left <= it.last && component.right > it.first }) continue
+            for (x in component.left until component.right) {
+                var run = 0
+                for (y in max(row.first, component.top) until min(row.last + 1, component.bottom)) {
+                    run = if (mask[y * width + x]) run + 1 else 0
+                    if (run >= max(3, row.count() / 20)) return null
+                }
+            }
+        }
+        columns.mapNotNull { column ->
+            if (column.count() < minimumWidth) return@mapNotNull null
             val inkRows = row.filter { y -> column.any { x -> mask[y * width + x] } }
             if (inkRows.isEmpty()) return@mapNotNull null
             val inkHeight = inkRows.last() - inkRows.first() + 1
@@ -165,7 +235,7 @@ private fun readSegmentDigit(mask: BooleanArray, width: Int, box: SegmentBox): I
         fill(0.32, 0.02, 0.70, 0.14), // top
         max(fill(0.68, 0.18, 0.88, 0.40), fill(0.80, 0.18, 1.0, 0.40)), // upper right
         max(fill(0.60, 0.60, 0.80, 0.84), fill(0.72, 0.60, 0.92, 0.84)), // lower right
-        fill(0.20, 0.87, 0.65, 0.99), // bottom
+        fill(0.20, 0.87, 0.50, 0.99), // bottom, clear of the slanted lower-right stroke
         max(fill(0.0, 0.60, 0.20, 0.84), fill(0.12, 0.60, 0.32, 0.84)), // lower left
         max(fill(0.02, 0.18, 0.22, 0.40), fill(0.14, 0.18, 0.34, 0.40)), // upper left
         fill(0.30, 0.43, 0.68, 0.57)  // middle
@@ -177,7 +247,7 @@ private fun readSegmentDigit(mask: BooleanArray, width: Int, box: SegmentBox): I
         0b1101101, 0b1111101, 0b0000111, 0b1111111, 0b1101111).indexOf(bits).takeIf { it >= 0 }
 }
 
-/** Connected dark-pixel bounds, used to exclude long LCD frame edges. */
+/** Connected dark-pixel bounds, used to retain evidence of clipped edge strokes. */
 private fun segmentComponents(mask: BooleanArray, width: Int, height: Int): List<SegmentBox> {
     val joined = mask.copyOf()
     val queue = IntArray(mask.size)
