@@ -2,9 +2,36 @@ package net.biahoi.stepnotionsync
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class VitalCameraReadingTest {
+    @Test
+    fun acceptsEitherEngineButRejectsConflictingCompleteReadings() {
+        val value = VitalCameraReading(104, 71, 89)
+        val recognized = SevenSegmentVitalResult.Recognized(value)
+        assertEquals(value, selectVitalCameraReading(null, recognized))
+        assertEquals(value, selectVitalCameraReading(value, SevenSegmentVitalResult.NotDetected))
+        assertEquals(value, selectVitalCameraReading(value, recognized))
+        assertNull(selectVitalCameraReading(value.copy(systolic = 184), recognized))
+        assertNull(selectVitalCameraReading(null, SevenSegmentVitalResult.NotDetected))
+    }
+
+    @Test
+    fun uncertainPixelReadingRequiresRetryEvenWhenOcrSucceeds() {
+        assertNull(selectVitalCameraReading(VitalCameraReading(183, 70, 60), SevenSegmentVitalResult.Uncertain))
+        assertNull(selectVitalCameraReading(null, SevenSegmentVitalResult.Uncertain))
+    }
+
+    @Test
+    fun doesNotBypassDatesTimesDecimalsAndSignsUsingThePixelFallback() {
+        for (text in listOf("12.0", ".", "12:00", "9/18", "-120", "+120", "−", "120,0")) {
+            assertFalse(text, allowsSevenSegmentFallback(column(text, "71", "89")))
+        }
+        assertTrue(allowsSevenSegmentFallback(column("I04", "7I", "89", "SYS.", "/min.")))
+    }
+
     @Test
     fun readsNumbersInScreenOrderInsteadOfOcrBlockOrder() {
         assertEquals(VitalCameraReading(120, 80, 65), parseVitalCameraReading(listOf(
@@ -27,6 +54,17 @@ class VitalCameraReadingTest {
     @Test
     fun doesNotTreatUnusualReadingsAsOcrMistakes() {
         assertEquals(VitalCameraReading(250, 160, 40), parseVitalCameraReading(column("250", "160", "40")))
+    }
+
+    @Test
+    fun acceptsMicrolifeLabelsWithTrailingPeriods() {
+        assertEquals(VitalCameraReading(104, 71, 89), parseVitalCameraReading(
+            column("104", "71", "89") + listOf("SYS.", "DIA.", "PUL.", "/min.").map {
+                VitalOcrElement(it, 100, 0, 140, 30)
+            }
+        ))
+        assertNull(parseVitalCameraReading(column("104.", "71", "89")))
+        assertNull(parseVitalCameraReading(column("104", "71", "89") + number("I.", 0)))
     }
 
     @Test
