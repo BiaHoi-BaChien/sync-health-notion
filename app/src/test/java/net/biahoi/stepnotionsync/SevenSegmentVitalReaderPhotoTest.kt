@@ -12,6 +12,39 @@ import org.junit.Test
 /** Optional local regression: personal photos are not versioned. */
 class SevenSegmentVitalReaderPhotoTest {
     @Test
+    fun readsIndividualMicrolifeRowsWithBordersOutsideTheGuides() {
+        val directory = System.getenv("VITAL_CAMERA_TEST_IMAGE_DIR")
+        assumeNotNull(directory)
+        // Explicitly positioned guides with margin around all digits; no fragment is erased.
+        val samples = listOf(
+            Triple("Screenshot_20260921-193044.png", listOf(
+                intArrayOf(245, 509, 410, 207), intArrayOf(245, 716, 410, 213), intArrayOf(438, 929, 207, 142)
+            ), listOf(110, 74, 77))
+        )
+        for ((name, boxes, values) in samples) {
+            val photo = ImageIO.read(File(directory, name))
+            boxes.forEachIndexed { index, box ->
+                val row = photo.getSubimage(box[0], box[1], box[2], box[3])
+                val pixels = row.getRGB(0, 0, row.width, row.height, null, 0, row.width)
+                assertEquals("$name row=$index", SevenSegmentNumberResult.Recognized(values[index]),
+                    readSevenSegmentNumber(pixels, row.width, row.height))
+            }
+        }
+    }
+
+    @Test
+    fun aPhotographedRowWithAmbiguousStrokesStillRequiresRetry() {
+        val directory = System.getenv("VITAL_CAMERA_TEST_IMAGE_DIR")
+        assumeNotNull(directory)
+        val photo = ImageIO.read(File(directory, "PXL_20260918_154909527.jpg"))
+        val row = photo.getSubimage(416, 449, 508, 284)
+        val pixels = row.getRGB(0, 0, row.width, row.height, null, 0, row.width)
+        val result = readSevenSegmentNumber(pixels, row.width, row.height)
+        assertEquals(SevenSegmentNumberResult.Uncertain, result)
+        assertNull(selectVitalCameraNumber(104, result))
+    }
+
+    @Test
     fun readsFramedMicrolifeScreenshot() {
         val directory = System.getenv("VITAL_CAMERA_TEST_IMAGE_DIR")
         assumeNotNull(directory)

@@ -6,6 +6,110 @@ import org.junit.Test
 
 class SevenSegmentVitalReaderTest {
     @Test
+    fun readsEachFramedNumberIndependentlyIncludingSmallPulse() {
+        for (compact in listOf(false, true)) for (values in listOf(
+            listOf("104", "71", "89"), listOf("250", "160", "40"),
+            listOf("189", "83", "52"), listOf("120", "80", "65")
+        ) + if (compact) listOf(listOf("110", "74", "77")) else emptyList()) {
+            val pixels = display(values, compact)
+            val ranges = if (compact) listOf(14 until 126, 126 until 240, 240 until 325)
+                else listOf(5 until 140, 140 until 275, 275 until 415)
+            ranges.forEachIndexed { index, rows ->
+                assertEquals("compact=$compact values=$values row=$index",
+                    SevenSegmentNumberResult.Recognized(values[index].toInt()),
+                    readSevenSegmentNumber(pixels.copyOfRange(rows.first * WIDTH, (rows.last + 1) * WIDTH), WIDTH, rows.count()))
+            }
+        }
+    }
+
+    @Test
+    fun aFramedRowStillRejectsConflictingContrastReadings() {
+        for (shade in listOf(115, 120, 125)) {
+            val pixels = display(listOf("189", "70", "60"))
+            val color = 0xff000000.toInt() or (shade shl 16) or (shade shl 8) or shade
+            for (y in 12 until 48) for (x in 0 until 10) {
+                pixels[(20 + y) * WIDTH + 200 + x + (102 - y) / 6] = color
+            }
+            val result = readSevenSegmentNumber(pixels.copyOfRange(5 * WIDTH, 140 * WIDTH), WIDTH, 135)
+            assertEquals("shade=$shade", SevenSegmentNumberResult.Uncertain, result)
+            assertNull(selectVitalCameraNumber(183, result))
+            assertNull(selectVitalCameraNumber(189, result))
+        }
+    }
+
+    @Test
+    fun normalizationRecoversAStableFaintStrokeWithoutAllowingConflictingOcr() {
+        val pixels = display(listOf("189", "70", "60"))
+        for (y in 12 until 48) for (x in 0 until 10) {
+            pixels[(20 + y) * WIDTH + 200 + x + (102 - y) / 6] = 0xff6e6e6e.toInt()
+        }
+        val result = readSevenSegmentNumber(pixels.copyOfRange(5 * WIDTH, 140 * WIDTH), WIDTH, 135)
+        assertEquals(SevenSegmentNumberResult.Recognized(189), result)
+        assertNull(selectVitalCameraNumber(183, result))
+        assertEquals(189, selectVitalCameraNumber(189, result))
+    }
+
+    @Test
+    fun clippingEitherSideOfARowCannotProduceACompleteNumber() {
+        val pixels = display(listOf("180", "60", "65"))
+        for ((left, right) in listOf(89 to WIDTH, 0 to 257)) {
+            val width = right - left
+            val cropped = IntArray(width * 135)
+            for (y in 0 until 135) pixels.copyInto(cropped, y * width, (y + 5) * WIDTH + left, (y + 5) * WIDTH + right)
+            val result = readSevenSegmentNumber(cropped, width, 135)
+            assertEquals(SevenSegmentNumberResult.Uncertain, result)
+            assertNull(selectVitalCameraNumber(80, result))
+        }
+    }
+
+    @Test
+    fun aPartialLeadingDigitCannotBeRecoveredAsASmallerNumber() {
+        val pixels = display(listOf("180", "60", "65"))
+        for (y in 70 until 125) for (x in 78 until 108) pixels[y * WIDTH + x] = 0xffaaaaaa.toInt()
+        val segments = readSevenSegmentNumber(pixels.copyOfRange(5 * WIDTH, 140 * WIDTH), WIDTH, 135)
+        assertEquals(SevenSegmentNumberResult.Uncertain, segments)
+        assertNull(selectVitalCameraNumber(80, segments))
+    }
+
+    @Test
+    fun aFaintPartialLeadingDigitCannotBecomeACompleteSmallerReading() {
+        for (compact in listOf(false, true)) for (shade in 134..150 step 2) {
+            val pixels = display(listOf("180", "60", "65"), compact)
+            val faded = 0xff000000.toInt() or (shade shl 16) or (shade shl 8) or shade
+            for (y in 20 until 125) for (x in 78 until 108) {
+                val index = y * WIDTH + x
+                if (y >= 70) pixels[index] = 0xffaaaaaa.toInt()
+                else if (pixels[index] == 0xff222222.toInt()) pixels[index] = faded
+            }
+            val rows = if (compact) 14 until 126 else 5 until 140
+            val segments = readSevenSegmentNumber(
+                pixels.copyOfRange(rows.first * WIDTH, (rows.last + 1) * WIDTH), WIDTH, rows.count())
+            assertEquals("compact=$compact shade=$shade", SevenSegmentNumberResult.Uncertain, segments)
+            for (elements in listOf(emptyList(), listOf(VitalOcrElement("80", 115, 10, 275, 100)))) {
+                assertNull(selectFramedVitalCameraNumber(elements, WIDTH, rows.count(), segments))
+            }
+        }
+    }
+
+    @Test
+    fun aDividerThroughADigitCannotBeOverriddenByOcr() {
+        val pixels = display(listOf("180", "60", "65"))
+        for (range in listOf(50 until 140, 5 until 90)) {
+            val segments = readSevenSegmentNumber(pixels.copyOfRange(range.first * WIDTH, (range.last + 1) * WIDTH), WIDTH, range.count())
+            assertEquals(SevenSegmentNumberResult.Uncertain, segments)
+            assertNull(selectVitalCameraNumber(180, segments))
+        }
+    }
+
+    @Test
+    fun twoNumbersInOneGuideRemainUncertain() {
+        val pixels = display(listOf("120", "80", "65"))
+        val result = readSevenSegmentNumber(pixels.copyOfRange(5 * WIDTH, 275 * WIDTH), WIDTH, 270)
+        assertEquals(SevenSegmentNumberResult.Uncertain, result)
+        assertNull(selectVitalCameraNumber(120, result))
+    }
+
+    @Test
     fun readsDifferentMeasurementsWithoutAssumingTypicalValues() {
         for (values in listOf(listOf("104", "71", "89"), listOf("120", "80", "65"), listOf("250", "160", "40"),
             listOf("138", "92", "76"), listOf("146", "83", "52"))) {
