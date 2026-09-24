@@ -9,9 +9,38 @@ internal sealed interface SevenSegmentVitalResult {
     data object Uncertain : SevenSegmentVitalResult
 }
 
+internal sealed interface SevenSegmentNumberResult {
+    data class Recognized(val value: Int) : SevenSegmentNumberResult
+    data object NotDetected : SevenSegmentNumberResult
+    data object Uncertain : SevenSegmentNumberResult
+}
+
+private sealed interface SegmentReadResult {
+    data class Recognized(val values: List<Int>) : SegmentReadResult
+    data object NotDetected : SegmentReadResult
+    data object Uncertain : SegmentReadResult
+}
+
 /** On-device fallback for a framed column of three dark seven-segment numbers. */
 internal fun readSevenSegmentVitals(pixels: IntArray, width: Int, height: Int): SevenSegmentVitalResult {
-    if (width !in 32..960 || height !in 32..960 || pixels.size != width * height) return SevenSegmentVitalResult.NotDetected
+    return when (val result = readSevenSegmentNumbers(pixels, width, height, 3)) {
+        is SegmentReadResult.Recognized -> vitalReadingFromNumbers(result.values)?.let { SevenSegmentVitalResult.Recognized(it) }
+            ?: SevenSegmentVitalResult.Uncertain
+        SegmentReadResult.NotDetected -> SevenSegmentVitalResult.NotDetected
+        SegmentReadResult.Uncertain -> SevenSegmentVitalResult.Uncertain
+    }
+}
+
+/** The entire row is retained: never crop away an unrecognized leading stroke. */
+internal fun readSevenSegmentNumber(pixels: IntArray, width: Int, height: Int): SevenSegmentNumberResult =
+    when (val result = readSevenSegmentNumbers(pixels, width, height, 1)) {
+        is SegmentReadResult.Recognized -> SevenSegmentNumberResult.Recognized(result.values.single())
+        SegmentReadResult.NotDetected -> SevenSegmentNumberResult.NotDetected
+        SegmentReadResult.Uncertain -> SevenSegmentNumberResult.Uncertain
+    }
+
+private fun readSevenSegmentNumbers(pixels: IntArray, width: Int, height: Int, expectedRows: Int): SegmentReadResult {
+    if (width !in 32..960 || height !in 32..960 || pixels.size != width * height) return SegmentReadResult.NotDetected
     val gray = IntArray(pixels.size) { index ->
         val color = pixels[index]
         (77 * (color shr 16 and 255) + 150 * (color shr 8 and 255) + 29 * (color and 255)) shr 8
@@ -22,35 +51,42 @@ internal fun readSevenSegmentVitals(pixels: IntArray, width: Int, height: Int): 
         var count = 0
         return histogram.indices.first { count += histogram[it]; count >= gray.size * fraction }
     }
-    val dark = percentile(0.05)
+    // A single 1 or 7 occupies much less of a row than three values do of a column.
+    val dark = percentile(if (expectedRows == 1) 0.01 else 0.05)
     val background = percentile(0.70)
-    if (background - dark < 30) return SevenSegmentVitalResult.NotDetected
+    if (background - dark < 30) return SegmentReadResult.NotDetected
+    val localGray = if (expectedRows == 1) normalizeRowLighting(gray, width, height) else gray
     val stride = width + 1
     val integral = IntArray(stride * (height + 1))
     for (y in 0 until height) {
         var sum = 0
         for (x in 0 until width) {
-            sum += gray[y * width + x]
+            sum += localGray[y * width + x]
             integral[(y + 1) * stride + x + 1] = integral[y * stride + x + 1] + sum
         }
     }
     val contrast = IntArray(gray.size)
-    val radius = max(8, height / 12)
+    val radius = max(8, if (expectedRows == 1) max(width, height) / 3 else height / 12)
     for (y in 0 until height) for (x in 0 until width) {
         val x0 = max(0, x - radius)
         val x1 = min(width, x + radius + 1)
         val y0 = max(0, y - radius)
         val y1 = min(height, y + radius + 1)
         val sum = integral[y1 * stride + x1] - integral[y0 * stride + x1] - integral[y1 * stride + x0] + integral[y0 * stride + x0]
-        contrast[y * width + x] = sum / ((x1 - x0) * (y1 - y0)) - gray[y * width + x]
+        contrast[y * width + x] = sum / ((x1 - x0) * (y1 - y0)) - localGray[y * width + x]
     }
     val thresholds = listOf(0.14, 0.17, 0.20, 0.23, 0.26)
         .map { max(6, ((background - dark) * it).toInt()) }.distinct()
-    val result = readSegmentContrasts(contrast, width, height, thresholds, closeRows = false)
+    // The local mean can hide a faint stroke next to darker digits. Keep independent
+    // stroke evidence from the row background before that mean is subtracted.
+    val strokeEvidence = if (expectedRows == 1) rowStrokeEvidence(localGray, width, height, thresholds.first()) else emptyList()
+    val result = readSegmentContrasts(contrast, width, height, thresholds, closeRows = false, expectedRows, strokeEvidence)
     // Never override a complete reading or uncertainty from the original detector.
-    if (result != SevenSegmentVitalResult.NotDetected) return result
+    if (result != SegmentReadResult.NotDetected) return result
+    if (expectedRows == 1) return readSegmentContrasts(horizontalSegmentContrast(gray, width, height),
+        width, height, thresholds, closeRows = false, expectedRows, strokeEvidence)
     return readSegmentContrasts(horizontalSegmentContrast(gray, width, height), width, height,
-        (thresholds.first()..thresholds.last()).toList(), closeRows = true)
+        (thresholds.first()..thresholds.last()).toList(), closeRows = true, expectedRows)
 }
 
 /** A horizontal background estimate excludes bright casing above/below the LCD. */
@@ -76,33 +112,91 @@ private fun horizontalSegmentContrast(gray: IntArray, width: Int, height: Int): 
 }
 
 private fun readSegmentContrasts(
-    contrast: IntArray, width: Int, height: Int, thresholds: List<Int>, closeRows: Boolean
-): SevenSegmentVitalResult {
-    val readings = mutableListOf<VitalCameraReading>()
+    contrast: IntArray, width: Int, height: Int, thresholds: List<Int>, closeRows: Boolean, expectedRows: Int,
+    strokeEvidence: List<SegmentBox> = emptyList()
+): SegmentReadResult {
+    val readings = mutableListOf<List<Int>>()
     for (threshold in thresholds) {
         val mask = BooleanArray(contrast.size) { contrast[it] >= threshold }
         // Keep the ink: erasing a frame's bounds can erase a digit attached to it as well.
         val edgeComponents = segmentComponents(mask, width, height).filter { it.left == 0 || it.right == width }
-        val boxes = projectedDigitBoxes(mask, width, height, closeRows, edgeComponents) ?: return SevenSegmentVitalResult.Uncertain
-        when (val result = readSegmentRows(mask, width, boxes)) {
-            is SevenSegmentVitalResult.Recognized -> readings.add(result.reading)
-            SevenSegmentVitalResult.Uncertain -> return result
-            SevenSegmentVitalResult.NotDetected -> Unit
+        // A guide boundary through a digit must not leave a plausible shortened number.
+        if (expectedRows == 1 && touchesNumberBoundary(mask, width, height)) return SegmentReadResult.Uncertain
+        val boxes = projectedDigitBoxes(mask, width, height, closeRows, edgeComponents, expectedRows) ?: return SegmentReadResult.Uncertain
+        when (val result = readSegmentRows(mask, width, boxes, expectedRows)) {
+            is SegmentReadResult.Recognized -> {
+                if (hasUnresolvedRowStroke(strokeEvidence, boxes)) return SegmentReadResult.Uncertain
+                readings.add(result.values)
+            }
+            SegmentReadResult.Uncertain -> return result
+            SegmentReadResult.NotDetected -> Unit
         }
     }
     // Multiple contrast levels must agree; never choose between conflicting complete readings.
     return when {
-        readings.distinct().size > 1 -> SevenSegmentVitalResult.Uncertain
-        readings.size >= 2 -> SevenSegmentVitalResult.Recognized(readings.first())
-        readings.isNotEmpty() -> SevenSegmentVitalResult.Uncertain
-        else -> SevenSegmentVitalResult.NotDetected
+        readings.distinct().size > 1 -> SegmentReadResult.Uncertain
+        readings.size >= 2 -> SegmentReadResult.Recognized(readings.first())
+        readings.isNotEmpty() -> SegmentReadResult.Uncertain
+        else -> SegmentReadResult.NotDetected
+    }
+}
+
+/** Dense vertical strokes can be a faint leading/trailing digit, even when not decoded. */
+private fun rowStrokeEvidence(normalized: IntArray, width: Int, height: Int, threshold: Int): List<SegmentBox> {
+    val mask = BooleanArray(normalized.size) { -normalized[it] >= threshold }
+    return segmentComponents(mask, width, height).filter { box ->
+        if (box.height < 4 || box.height < box.width * 1.5) return@filter false
+        var ink = 0
+        for (y in box.top until box.bottom) for (x in box.left until box.right) if (mask[y * width + x]) ink++
+        ink >= box.width * box.height * 0.45
+    }
+}
+
+private fun hasUnresolvedRowStroke(evidence: List<SegmentBox>, digits: List<SegmentBox>): Boolean {
+    if (evidence.isEmpty() || digits.isEmpty()) return false
+    val top = digits.minOf { it.top }
+    val bottom = digits.maxOf { it.bottom }
+    val height = bottom - top
+    val left = digits.minOf { it.left }
+    val right = digits.maxOf { it.right }
+    val margin = max(2, height / 20)
+    return evidence.any { stroke ->
+        stroke.height >= max(4, height / 5) &&
+            stroke.top >= top - margin && stroke.bottom <= bottom + margin &&
+            stroke.right >= left - height * 0.95 && stroke.left <= right + height * 0.95 &&
+            digits.none { stroke.right > it.left - margin && stroke.left < it.right + margin }
+    }
+}
+
+/** Remove horizontal lighting bands before the local mean, without erasing border pixels. */
+private fun normalizeRowLighting(gray: IntArray, width: Int, height: Int): IntArray {
+    val normalized = IntArray(gray.size)
+    for (y in 0 until height) {
+        val histogram = IntArray(256)
+        for (x in 0 until width) histogram[gray[y * width + x]]++
+        var count = 0
+        val background = histogram.indices.first { count += histogram[it]; count >= width * 0.75 }
+        for (x in 0 until width) normalized[y * width + x] = gray[y * width + x] - background
+    }
+    return normalized
+}
+
+private fun touchesNumberBoundary(mask: BooleanArray, width: Int, height: Int): Boolean {
+    val margin = max(2, min(width, height) / 100)
+    // Check a small inner margin too, so resampling does not hide a clipped edge.
+    return segmentComponents(mask, width, height).any {
+        (it.left < margin || it.top < margin || it.right > width - margin || it.bottom > height - margin) &&
+            max(it.width, it.height) >= max(4, height / 12)
     }
 }
 
 /** Null means conflicting digit evidence was found; it must not be dropped as noise. */
 private fun projectedDigitBoxes(
-    mask: BooleanArray, width: Int, height: Int, closeRows: Boolean, edgeComponents: List<SegmentBox>
+    mask: BooleanArray, width: Int, height: Int, closeRows: Boolean, edgeComponents: List<SegmentBox>, expectedRows: Int
 ): List<SegmentBox>? {
+    // The legacy spacing rules describe a whole column. Preserve that physical scale
+    // for a single row so the gap between a 1/7's upper and lower strokes is joined.
+    val layoutHeight = height * if (expectedRows == 1) 4 else 1
     fun spans(values: IntArray, minimum: Int, gap: Int): List<IntRange> {
         val active = values.indices.filter { values[it] >= minimum }
         if (active.isEmpty()) return emptyList()
@@ -119,10 +213,10 @@ private fun projectedDigitBoxes(
     val horizontal = IntArray(height) { y -> (0 until width).count { x -> mask[y * width + x] } }
     val minimum = if (closeRows) max(8, min((width * 0.075).toInt(), (horizontal.max() * 0.25).toInt()))
         else max(8, (horizontal.max() * 0.16).toInt())
-    val rows = spans(horizontal, minimum, max(2, height / (if (closeRows) 120 else 42)))
-        .filter { it.last - it.first >= height / (if (closeRows) 30 else 12) }.toMutableList()
+    val rows = spans(horizontal, minimum, max(2, layoutHeight / (if (closeRows) 120 else 42)))
+        .filter { it.last - it.first >= layoutHeight / (if (closeRows) 30 else 12) }.toMutableList()
     val tallest = rows.maxOfOrNull { it.count() } ?: return emptyList()
-    while (closeRows || rows.size > 3) {
+    while (closeRows || rows.size > expectedRows) {
         val joins = (0 until rows.lastIndex).filter { index ->
             rows[index + 1].first - rows[index].last < tallest * (if (closeRows) 0.25 else 0.15) &&
                 rows[index + 1].last - rows[index].first < tallest * (if (closeRows) 1.30 else 1.10)
@@ -130,7 +224,7 @@ private fun projectedDigitBoxes(
         if (closeRows && joins.isEmpty()) break
         val ambiguousJoin = if (closeRows) joins.zipWithNext().any { (a, b) -> b == a + 1 } else joins.size != 1
         if (ambiguousJoin) {
-            if (rows.size <= 3) return emptyList()
+            if (rows.size <= expectedRows) return emptyList()
             break
         }
         val index = joins.first()
@@ -138,8 +232,8 @@ private fun projectedDigitBoxes(
         rows.removeAt(index + 1)
     }
     // Join a small pulse's separated upper/lower strokes before removing short noise rows.
-    if (closeRows) rows.removeAll { it.count() < height / 12 }
-    if (rows.size > 3) {
+    if (closeRows) rows.removeAll { it.count() < layoutHeight / 12 }
+    if (rows.size > expectedRows) {
         // Casing shadows can resemble an extra row. Require complete digit evidence
         // before blocking OCR, without applying partial-digit guards to that noise.
         val boxes = rows.flatMap { row ->
@@ -148,9 +242,9 @@ private fun projectedDigitBoxes(
                 SegmentBox(column.first, row.first, column.last + 1, row.last + 1)
             }
         }
-        return if (readSegmentRows(mask, width, boxes) == SevenSegmentVitalResult.Uncertain) null else emptyList()
+        return if (readSegmentRows(mask, width, boxes, expectedRows) == SegmentReadResult.Uncertain) null else emptyList()
     }
-    if (rows.size != 3) return emptyList()
+    if (rows.size != expectedRows) return emptyList()
     return rows.flatMap { row ->
         val vertical = IntArray(width) { x -> row.count { y -> mask[y * width + x] } }
         val columns = spans(vertical, max(3, (row.count() * 0.06).toInt()), 3)
@@ -212,25 +306,28 @@ private data class SegmentBox(val left: Int, val top: Int, val right: Int, val b
     val centerY get() = (top + bottom) / 2
 }
 
-private fun readSegmentRows(mask: BooleanArray, width: Int, boxes: List<SegmentBox>): SevenSegmentVitalResult {
-    if (boxes.size < 3) return SevenSegmentVitalResult.NotDetected
+private fun readSegmentRows(mask: BooleanArray, width: Int, boxes: List<SegmentBox>, expectedRows: Int): SegmentReadResult {
+    if (boxes.size < expectedRows) return SegmentReadResult.NotDetected
     val rows = mutableListOf<MutableList<SegmentBox>>()
     for (box in boxes.sortedBy { it.centerY }) {
         val row = rows.lastOrNull()
         if (row != null && box.centerY - row.first().centerY < min(box.height, row.first().height) / 2) row.add(box)
         else rows.add(mutableListOf(box))
     }
-    if (rows.size < 3) return SevenSegmentVitalResult.NotDetected
+    if (rows.size < expectedRows) return SegmentReadResult.NotDetected
     val elements = rows.map { row ->
         val ordered = row.sortedBy { it.left }
-        if (row.maxOf { it.height } > row.minOf { it.height } * 1.35) return SevenSegmentVitalResult.NotDetected
-        if (ordered.zipWithNext().any { (a, b) -> b.left < a.right || b.left - a.right > max(a.height, b.height) * 0.95 }) return SevenSegmentVitalResult.NotDetected
-        val digits = ordered.map { readSegmentDigit(mask, width, it) ?: return SevenSegmentVitalResult.NotDetected }.joinToString("")
+        if (row.maxOf { it.height } > row.minOf { it.height } * 1.35) return SegmentReadResult.NotDetected
+        if (ordered.zipWithNext().any { (a, b) -> b.left < a.right || b.left - a.right > max(a.height, b.height) * 0.95 }) return SegmentReadResult.NotDetected
+        val digits = ordered.map { readSegmentDigit(mask, width, it) ?: return SegmentReadResult.NotDetected }.joinToString("")
         VitalOcrElement(digits, row.minOf { it.left }, row.minOf { it.top }, row.maxOf { it.right }, row.maxOf { it.bottom })
     }
     // Fully decoded but invalid rows/values contradict OCR; they are not a missed detection.
-    return parseVitalCameraReading(elements)?.let { SevenSegmentVitalResult.Recognized(it) }
-        ?: SevenSegmentVitalResult.Uncertain
+    if (expectedRows == 3) return parseVitalCameraReading(elements)?.let {
+        SegmentReadResult.Recognized(listOf(it.systolic, it.diastolic, it.heartRate))
+    } ?: SegmentReadResult.Uncertain
+    return parseVitalCameraNumber(elements)?.let { SegmentReadResult.Recognized(listOf(it)) }
+        ?: SegmentReadResult.Uncertain
 }
 
 private fun readSegmentDigit(mask: BooleanArray, width: Int, box: SegmentBox): Int? {

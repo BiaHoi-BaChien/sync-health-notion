@@ -8,6 +8,34 @@ import org.junit.Test
 
 class VitalCameraReadingTest {
     @Test
+    fun framedOcrCannotOverrideClippingSignsOrPixelUncertainty() {
+        val valid = VitalOcrElement("120", 20, 10, 160, 90)
+        assertEquals(120, selectFramedVitalCameraNumber(listOf(valid), 200, 100, SevenSegmentNumberResult.NotDetected))
+        for (clipped in listOf(valid.copy(left = 0), valid.copy(top = 0), valid.copy(right = 200), valid.copy(bottom = 100))) {
+            assertNull(selectFramedVitalCameraNumber(listOf(clipped), 200, 100, SevenSegmentNumberResult.NotDetected))
+            assertNull(selectFramedVitalCameraNumber(listOf(clipped), 200, 100, SevenSegmentNumberResult.Recognized(120)))
+        }
+        assertNull(selectFramedVitalCameraNumber(listOf(valid.copy(text = "120.0")), 200, 100, SevenSegmentNumberResult.Recognized(120)))
+        assertNull(selectFramedVitalCameraNumber(listOf(valid), 200, 100, SevenSegmentNumberResult.Uncertain))
+    }
+
+    @Test
+    fun individualRowsKeepStrictParsingAndPixelDisagreementChecks() {
+        assertEquals(120, parseVitalCameraNumber(listOf(number("１２０", 0))))
+        for (text in listOf("I20", "12O", "1 20", "120.0", "-120", "0", "0120")) {
+            assertNull(text, parseVitalCameraNumber(listOf(number(text, 0))))
+        }
+        assertNull(parseVitalCameraNumber(listOf(number("1", 0), number("20", 0))))
+        assertEquals(120, selectVitalCameraNumber(120, SevenSegmentNumberResult.Recognized(120)))
+        assertNull(selectVitalCameraNumber(120, SevenSegmentNumberResult.Recognized(128)))
+        assertNull(selectVitalCameraNumber(120, SevenSegmentNumberResult.Uncertain))
+        assertEquals(VitalCameraReading(250, 160, 40), vitalReadingFromNumbers(listOf(250, 160, 40)))
+        for (values in listOf(listOf(120, 80), listOf(80, 120, 65), listOf(120, 80, 301), listOf(120, 0, 65))) {
+            assertNull(vitalReadingFromNumbers(values))
+        }
+    }
+
+    @Test
     fun acceptsEitherEngineButRejectsConflictingCompleteReadings() {
         val value = VitalCameraReading(104, 71, 89)
         val recognized = SevenSegmentVitalResult.Recognized(value)

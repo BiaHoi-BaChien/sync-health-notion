@@ -10,6 +10,40 @@ private val VITAL_OCR_LABELS_AND_UNITS = setOf(
 
 internal data class VitalCameraReading(val systolic: Int, val diastolic: Int, val heartRate: Int)
 
+internal fun vitalReadingFromNumbers(values: List<Int>): VitalCameraReading? {
+    if (values.size != 3 || values.any { it !in 1..999 }) return null
+    val (systolic, diastolic, heartRate) = values
+    if (systolic <= diastolic || heartRate > 300) return null
+    return VitalCameraReading(systolic, diastolic, heartRate)
+}
+
+internal fun selectVitalCameraNumber(ocr: Int?, segments: SevenSegmentNumberResult): Int? = when (segments) {
+    is SevenSegmentNumberResult.Recognized -> segments.value.takeIf { ocr == null || it == ocr }
+    SevenSegmentNumberResult.NotDetected -> ocr
+    SevenSegmentNumberResult.Uncertain -> null
+}
+
+internal fun selectFramedVitalCameraNumber(
+    elements: List<VitalOcrElement>, width: Int, height: Int, segments: SevenSegmentNumberResult
+): Int? {
+    val margin = maxOf(2, minOf(width, height) / 100)
+    if (elements.any { it.left < margin || it.top < margin || it.right > width - margin || it.bottom > height - margin }) return null
+    if (!allowsSevenSegmentFallback(elements)) return null
+    return selectVitalCameraNumber(parseVitalCameraNumber(elements), segments)
+}
+
+/** One complete number per guide; split digits and unknown text remain invalid. */
+internal fun parseVitalCameraNumber(elements: List<VitalOcrElement>): Int? {
+    val numbers = elements.filterNot {
+        val text = Normalizer.normalize(it.text, Normalizer.Form.NFKC).trim().lowercase(Locale.ROOT)
+        text.isEmpty() || text.trimEnd('.') in VITAL_OCR_LABELS_AND_UNITS
+    }
+    val element = numbers.singleOrNull() ?: return null
+    if (element.left >= element.right || element.top >= element.bottom) return null
+    val text = Normalizer.normalize(element.text, Normalizer.Form.NFKC).trim()
+    return text.takeIf { it.matches(Regex("[1-9][0-9]{0,2}")) }?.toInt()
+}
+
 /** Pixel uncertainty and conflicting complete readings require a retry, even when OCR succeeds. */
 internal fun selectVitalCameraReading(ocr: VitalCameraReading?, segments: SevenSegmentVitalResult): VitalCameraReading? =
     when (segments) {
