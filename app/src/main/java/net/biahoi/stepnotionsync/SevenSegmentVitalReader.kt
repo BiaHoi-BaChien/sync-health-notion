@@ -16,19 +16,122 @@ internal sealed interface SevenSegmentNumberResult {
 }
 
 private sealed interface SegmentReadResult {
-    data class Recognized(val values: List<Int>) : SegmentReadResult
+    data class Recognized(val values: List<Int>, val rows: List<VitalOcrElement>) : SegmentReadResult
     data object NotDetected : SegmentReadResult
     data object Uncertain : SegmentReadResult
 }
 
 /** On-device fallback for a framed column of three dark seven-segment numbers. */
-internal fun readSevenSegmentVitals(pixels: IntArray, width: Int, height: Int): SevenSegmentVitalResult {
+internal fun readSevenSegmentVitals(pixels: IntArray, width: Int, height: Int): SevenSegmentVitalResult =
+    readSevenSegmentDisplay(pixels, width, height).result
+
+internal data class SevenSegmentDisplay(val result: SevenSegmentVitalResult, val rows: List<VitalOcrElement> = emptyList())
+
+/** Keep positions so partial OCR must agree with the same physical row, not just any value. */
+internal fun readSevenSegmentDisplay(pixels: IntArray, width: Int, height: Int): SevenSegmentDisplay {
     return when (val result = readSevenSegmentNumbers(pixels, width, height, 3)) {
-        is SegmentReadResult.Recognized -> vitalReadingFromNumbers(result.values)?.let { SevenSegmentVitalResult.Recognized(it) }
-            ?: SevenSegmentVitalResult.Uncertain
-        SegmentReadResult.NotDetected -> SevenSegmentVitalResult.NotDetected
-        SegmentReadResult.Uncertain -> SevenSegmentVitalResult.Uncertain
+        is SegmentReadResult.Recognized -> vitalReadingFromNumbers(result.values)?.let {
+            SevenSegmentDisplay(SevenSegmentVitalResult.Recognized(it), result.rows)
+        } ?: SevenSegmentDisplay(SevenSegmentVitalResult.Uncertain)
+        SegmentReadResult.NotDetected -> SevenSegmentDisplay(SevenSegmentVitalResult.NotDetected)
+        SegmentReadResult.Uncertain -> SevenSegmentDisplay(SevenSegmentVitalResult.Uncertain)
     }
+}
+
+internal data class AutomaticVitalPixels(val display: SevenSegmentDisplay, val content: VitalImageRegion)
+
+/** Inspect the whole image before any OCR-driven row crop can discard numeric evidence. */
+internal fun readAutomaticVitalPixels(pixels: IntArray, width: Int, height: Int, ocr: List<VitalOcrElement>): AutomaticVitalPixels {
+    val full = VitalImageRegion(0, 0, width, height)
+    fun uncertain() = AutomaticVitalPixels(SevenSegmentDisplay(SevenSegmentVitalResult.Uncertain), full)
+    if (width !in 32..960 || height !in 32..960 || pixels.size != width * height) return uncertain()
+    if (ocr.size > 200 || ocr.any { it.left < 0 || it.top < 0 || it.right > width || it.bottom > height ||
+            it.left >= it.right || it.top >= it.bottom }) return uncertain()
+    val gray = IntArray(pixels.size) { index ->
+        val color = pixels[index]
+        (77 * (color shr 16 and 255) + 150 * (color shr 8 and 255) + 29 * (color and 255)) shr 8
+    }
+    val contrast = horizontalSegmentContrast(gray, width, height)
+    val anchors = ocr.filter(::isVitalNumericEvidence)
+    var left = 0
+    var right = width
+    if (anchors.isNotEmpty()) {
+        val tallest = anchors.maxOf { it.bottom - it.top }
+        val top = anchors.minOf { it.top }
+        val bottom = anchors.maxOf { it.bottom }
+        // A digit, including a 1, cannot span two measurement rows. Only a narrow
+        // straight border continuous through that entire band may be excluded.
+        if (tallest >= 16 && bottom - top > tallest * 1.7) {
+            val mask = BooleanArray(pixels.size) { contrast[it] >= 12 }
+            val columns = (0 until width).filter { x -> (top until bottom).all { y -> mask[y * width + x] } }
+            val strips = mutableListOf<IntRange>()
+            for (x in columns) {
+                if (strips.isNotEmpty() && x == strips.last().last + 1) strips[strips.lastIndex] = strips.last().first..x
+                else strips.add(x..x)
+            }
+            val thin = strips.filter { it.count() <= max(3, tallest / 4) }
+            val margin = max(4, tallest / 10)
+            val sides = listOf(
+                thin.lastOrNull { it.last < anchors.minOf { a -> a.left } - margin } to true,
+                thin.firstOrNull { it.first > anchors.maxOf { a -> a.right } + margin } to false
+            )
+            for ((strip, isLeft) in sides) {
+                if (strip == null) continue
+                // Do not erase a stroke attached to a border. Keep uncertainty even
+                // if OCR failed to report that stroke as a leading digit.
+                val inner = if (isLeft) strip.last + 1 else strip.first - 1
+                var run = 0
+                for (y in top until bottom) {
+                    run = if (mask[y * width + inner]) run + 1 else 0
+                    if (run >= max(3, tallest / 20)) return uncertain()
+                }
+                if (isLeft) left = strip.last + 1 else right = strip.first
+            }
+        }
+    }
+    val content = VitalImageRegion(left, 0, right, height)
+    if (content.width < 32) return uncertain()
+    fun crop(region: VitalImageRegion): IntArray = IntArray(region.width * region.height).also { out ->
+        for (y in 0 until region.height) pixels.copyInto(out, y * region.width,
+            (y + region.top) * width + region.left, (y + region.top) * width + region.right)
+    }
+    val detected = readSevenSegmentDisplay(crop(content), content.width, content.height)
+    val display = detected.copy(rows = detected.rows.map { it.copy(left = it.left + left, right = it.right + left) })
+    if (display.result is SevenSegmentVitalResult.Recognized) {
+        // Recheck each complete row with the stricter fragment/boundary detector.
+        for ((index, row) in display.rows.withIndex()) {
+            val margin = max(4, (row.bottom - row.top) / 10)
+            val topLimit = if (index == 0) 0 else (display.rows[index - 1].bottom + row.top) / 2
+            val bottomLimit = if (index == display.rows.lastIndex) height else (row.bottom + display.rows[index + 1].top) / 2
+            val region = VitalImageRegion(left, max(topLimit, row.top - margin), right, min(bottomLimit, row.bottom + margin))
+            when (val result = readSevenSegmentNumber(crop(region), region.width, region.height)) {
+                SevenSegmentNumberResult.Uncertain -> return uncertain()
+                is SevenSegmentNumberResult.Recognized -> if (result.value.toString() != row.text) return uncertain()
+                SevenSegmentNumberResult.NotDetected -> Unit
+            }
+        }
+        // A small pulse/date can fall below the whole-column row-height cutoff.
+        // Audit unused vertical gaps at their own scale before accepting three rows.
+        val gaps = (listOf(0) + display.rows.map { it.bottom }).zip(display.rows.map { it.top } + height)
+        val components = segmentComponents(BooleanArray(pixels.size) { contrast[it] >= 12 }, width, height)
+        for ((top, bottom) in gaps) {
+            val strokes = components.filter { it.top >= top && it.bottom <= bottom &&
+                it.left >= left && it.right <= right && it.height >= 4 && it.width < content.width * 0.75 }
+            if (strokes.isEmpty()) continue
+            val inkTop = strokes.minOf { it.top }
+            val inkBottom = strokes.maxOf { it.bottom }
+            // An unreadable intervening row may still be the real pulse. It must
+            // not disappear just because a larger memory number decoded below it.
+            val minimumHeight = max(8, display.rows.maxOf { it.bottom - it.top } / 10)
+            if (top > 0 && bottom < height && inkBottom - inkTop >= minimumHeight &&
+                strokes.sumOf { it.width * it.height } >= minimumHeight * minimumHeight) return uncertain()
+            val margin = max(4, (inkBottom - inkTop) / 10)
+            val region = VitalImageRegion(left, max(top, inkTop - margin), right, min(bottom, inkBottom + margin))
+            if (region.height < 32) continue
+            if (readSevenSegmentNumber(crop(region), region.width, region.height) != SevenSegmentNumberResult.NotDetected) return uncertain()
+        }
+    }
+    return AutomaticVitalPixels(display, content)
 }
 
 /** The entire row is retained: never crop away an unrecognized leading stroke. */
@@ -115,7 +218,7 @@ private fun readSegmentContrasts(
     contrast: IntArray, width: Int, height: Int, thresholds: List<Int>, closeRows: Boolean, expectedRows: Int,
     strokeEvidence: List<SegmentBox> = emptyList()
 ): SegmentReadResult {
-    val readings = mutableListOf<List<Int>>()
+    val readings = mutableListOf<SegmentReadResult.Recognized>()
     for (threshold in thresholds) {
         val mask = BooleanArray(contrast.size) { contrast[it] >= threshold }
         // Keep the ink: erasing a frame's bounds can erase a digit attached to it as well.
@@ -126,7 +229,7 @@ private fun readSegmentContrasts(
         when (val result = readSegmentRows(mask, width, boxes, expectedRows)) {
             is SegmentReadResult.Recognized -> {
                 if (hasUnresolvedRowStroke(strokeEvidence, boxes)) return SegmentReadResult.Uncertain
-                readings.add(result.values)
+                readings.add(result)
             }
             SegmentReadResult.Uncertain -> return result
             SegmentReadResult.NotDetected -> Unit
@@ -134,8 +237,12 @@ private fun readSegmentContrasts(
     }
     // Multiple contrast levels must agree; never choose between conflicting complete readings.
     return when {
-        readings.distinct().size > 1 -> SegmentReadResult.Uncertain
-        readings.size >= 2 -> SegmentReadResult.Recognized(readings.first())
+        readings.map { it.values }.distinct().size > 1 -> SegmentReadResult.Uncertain
+        readings.size >= 2 -> readings.first().copy(rows = readings.first().rows.mapIndexed { index, row ->
+            val matches = readings.map { it.rows[index] }
+            row.copy(left = matches.minOf { it.left }, top = matches.minOf { it.top },
+                right = matches.maxOf { it.right }, bottom = matches.maxOf { it.bottom })
+        })
         readings.isNotEmpty() -> SegmentReadResult.Uncertain
         else -> SegmentReadResult.NotDetected
     }
@@ -324,9 +431,9 @@ private fun readSegmentRows(mask: BooleanArray, width: Int, boxes: List<SegmentB
     }
     // Fully decoded but invalid rows/values contradict OCR; they are not a missed detection.
     if (expectedRows == 3) return parseVitalCameraReading(elements)?.let {
-        SegmentReadResult.Recognized(listOf(it.systolic, it.diastolic, it.heartRate))
+        SegmentReadResult.Recognized(listOf(it.systolic, it.diastolic, it.heartRate), elements)
     } ?: SegmentReadResult.Uncertain
-    return parseVitalCameraNumber(elements)?.let { SegmentReadResult.Recognized(listOf(it)) }
+    return parseVitalCameraNumber(elements)?.let { SegmentReadResult.Recognized(listOf(it), elements) }
         ?: SegmentReadResult.Uncertain
 }
 

@@ -7,10 +7,39 @@ import javax.imageio.ImageIO
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assume.assumeNotNull
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 
 /** Optional local regression: personal photos are not versioned. */
 class SevenSegmentVitalReaderPhotoTest {
+    @Test
+    fun september25GuidesRequireReframingRatherThanOverridingBoundaryEvidence() {
+        val directory = System.getenv("VITAL_CAMERA_TEST_IMAGE_DIR")
+        assumeNotNull(directory)
+        val file = File(directory, "1000001671.png")
+        assumeTrue(file.isFile)
+        val photo = ImageIO.read(file)
+        // Exclude the green outline. The divider cuts the 72 and the LCD border
+        // enters the outer rows; this screenshot must not justify relaxing clipping checks.
+        val boxes = listOf(
+            intArrayOf(164, 530, 535, 289), intArrayOf(164, 825, 535, 232), intArrayOf(164, 1064, 535, 226)
+        )
+        boxes.forEachIndexed { index, box ->
+            val row = photo.getSubimage(box[0], box[1], box[2], box[3])
+            val pixels = row.getRGB(0, 0, row.width, row.height, null, 0, row.width)
+            val result = readSevenSegmentNumber(pixels, row.width, row.height)
+            assertEquals("row=$index", SevenSegmentNumberResult.Uncertain, result)
+            assertNull(selectVitalCameraNumber(listOf(109, 72, 78)[index], result))
+        }
+
+        // The systolic digits are intact above the overlay and can be reframed.
+        // The screenshot's overlaid divider hides pixels in 72, so it cannot
+        // verify successful reframing of all three rows from the original camera bitmap.
+        val row = photo.getSubimage(211, 571, 460, 235)
+        val pixels = row.getRGB(0, 0, row.width, row.height, null, 0, row.width)
+        assertEquals(SevenSegmentNumberResult.Recognized(109), readSevenSegmentNumber(pixels, row.width, row.height))
+    }
+
     @Test
     fun readsIndividualMicrolifeRowsWithBordersOutsideTheGuides() {
         val directory = System.getenv("VITAL_CAMERA_TEST_IMAGE_DIR")
