@@ -3,6 +3,10 @@ package net.biahoi.stepnotionsync
 import java.text.Normalizer
 import java.util.Locale
 
+internal val VITAL_MEASUREMENT_LABELS = listOf(
+    setOf("sys", "最高血圧", "収縮期"), setOf("dia", "最低血圧", "拡張期"), setOf("pul", "pulse", "脈拍")
+)
+
 private val VITAL_OCR_LABELS_AND_UNITS = setOf(
     "sys", "dia", "pul", "pulse", "mmhg", "bpm", "/min",
     "最高血圧", "最低血圧", "収縮期", "拡張期", "脈拍"
@@ -30,6 +34,51 @@ internal fun selectFramedVitalCameraNumber(
     if (elements.any { it.left < margin || it.top < margin || it.right > width - margin || it.bottom > height - margin }) return null
     if (!allowsSevenSegmentFallback(elements)) return null
     return selectVitalCameraNumber(parseVitalCameraNumber(elements), segments)
+}
+
+/** Cropping cannot override a conflicting full-image reading or discard its uncertain glyphs. */
+internal fun selectAutomaticVitalCameraNumber(
+    original: List<VitalOcrElement>, refined: List<VitalOcrElement>, width: Int, height: Int,
+    segments: SevenSegmentNumberResult
+): Int? {
+    val first = selectFramedVitalCameraNumber(original, width, height, segments) ?: return null
+    val second = selectFramedVitalCameraNumber(refined, width, height, segments) ?: return null
+    return first.takeIf { it == second }
+}
+
+/** Missing OCR rows are allowed only when independently located pixels supply them. */
+internal fun selectWholeImageVitalReading(elements: List<VitalOcrElement>, display: SevenSegmentDisplay): VitalCameraReading? {
+    val recognized = display.result as? SevenSegmentVitalResult.Recognized ?: return null
+    if (display.rows.size != 3 || parseVitalCameraReading(display.rows) != recognized.reading) return null
+    val matched = List(3) { mutableListOf<VitalOcrElement>() }
+    for (element in elements) {
+        if (element.left < 0 || element.top < 0 || element.right <= element.left || element.bottom <= element.top) return null
+        val text = Normalizer.normalize(element.text, Normalizer.Form.NFKC).trim().lowercase(Locale.ROOT)
+        val field = VITAL_MEASUREMENT_LABELS.indexOfFirst { text.trimEnd('.') in it }
+        if (field >= 0) {
+            val row = display.rows[field]
+            val margin = (row.bottom - row.top) / 10
+            if ((element.top + element.bottom) / 2 !in row.top - margin until row.bottom + margin) return null
+        }
+        if (text.isEmpty() || text.trimEnd('.') in VITAL_OCR_LABELS_AND_UNITS) continue
+        val rows = display.rows.indices.filter { index ->
+            val row = display.rows[index]
+            val overlap = minOf(row.bottom, element.bottom) - maxOf(row.top, element.top)
+            val margin = (row.bottom - row.top) / 4
+            overlap > 0 && overlap >= minOf(row.bottom - row.top, element.bottom - element.top) / 2 &&
+                element.right > row.left - margin && element.left < row.right + margin
+        }
+        // A number outside all detected rows is additional evidence, not background.
+        if (rows.isEmpty() && !isVitalNumericEvidence(element)) continue
+        if (rows.size != 1) return null
+        matched[rows.single()].add(element)
+    }
+    for ((index, row) in matched.withIndex()) {
+        if (!allowsSevenSegmentFallback(row)) return null
+        // Multiple tokens must not hide a conflicting complete OCR number.
+        if (row.mapNotNull { parseVitalCameraNumber(listOf(it)) }.any { it.toString() != display.rows[index].text }) return null
+    }
+    return recognized.reading
 }
 
 /** One complete number per guide; split digits and unknown text remain invalid. */

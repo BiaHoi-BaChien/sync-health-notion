@@ -48,7 +48,6 @@ import java.util.concurrent.TimeUnit
 class VitalCameraActivity : ComponentActivity() {
     private lateinit var previewView: PreviewView
     private lateinit var frozenView: ImageView
-    private lateinit var scanFrame: VitalScanFrameView
     private lateinit var statusText: TextView
     private lateinit var readButton: Button
     private lateinit var useButton: Button
@@ -87,7 +86,7 @@ class VitalCameraActivity : ComponentActivity() {
             insets
         }
         root.addView(label("カメラでバイタルを入力", 20f))
-        root.addView(label("上から最高血圧・最低血圧・脈拍を合わせてください。四隅で傾き、区切り線で高さ、左右の点で各行の幅を調整できます。数字に余白を残し、液晶の縁・日付・時刻は外してください。", 14f))
+        root.addView(label("血圧計の表示全体を写して「読み取る」を押してください。最高血圧・最低血圧・脈拍を自動で探します。", 14f))
         previewView = PreviewView(this).apply {
             implementationMode = PreviewView.ImplementationMode.COMPATIBLE
             scaleType = PreviewView.ScaleType.FILL_CENTER
@@ -97,11 +96,9 @@ class VitalCameraActivity : ComponentActivity() {
             visibility = View.GONE
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         }
-        scanFrame = VitalScanFrameView(this)
         root.addView(FrameLayout(this).apply {
             addView(previewView, FrameLayout.LayoutParams(-1, -1))
             addView(frozenView, FrameLayout.LayoutParams(-1, -1))
-            addView(scanFrame, FrameLayout.LayoutParams(-1, -1))
         }, LinearLayout.LayoutParams(-1, dp(240), 1f).apply { topMargin = dp(12) })
         statusText = label("カメラを準備しています…", 16f).apply {
             // Keep the preview/viewport stable between focusing, capture and results.
@@ -115,7 +112,9 @@ class VitalCameraActivity : ComponentActivity() {
             text = "読み取る"
             isEnabled = false
             setOnClickListener {
+                if (recognizing) return@setOnClickListener
                 when {
+                    capturedFrame != null -> resetReading()
                     !hasCameraPermission() -> {
                         if (shouldShowRequestPermissionRationale(Manifest.permission.CAMERA)) {
                             permissionLauncher.launch(Manifest.permission.CAMERA)
@@ -123,7 +122,6 @@ class VitalCameraActivity : ComponentActivity() {
                             startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
                         }
                     }
-                    capturedFrame != null -> resetReading()
                     preview == null -> startCamera()
                     else -> captureFrame()
                 }
@@ -159,7 +157,7 @@ class VitalCameraActivity : ComponentActivity() {
         previewView.previewStreamState.observe(this) { state ->
             if (preview != null && hasCameraPermission() && !recognizing && capturedFrame == null) {
                 readButton.isEnabled = state == PreviewView.StreamState.STREAMING
-                if (state == PreviewView.StreamState.STREAMING) statusText.text = "3つの枠を合わせて「読み取る」を押してください。ピントを合わせて撮影します。"
+                if (state == PreviewView.StreamState.STREAMING) statusText.text = "表示全体を写して「読み取る」を押してください。ピントを合わせて撮影します。"
             }
         }
         previewView.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
@@ -246,24 +244,18 @@ class VitalCameraActivity : ComponentActivity() {
         if (recognizing) return
         val boundCamera = camera ?: return
         val capture = imageCapture ?: return
-        val guide = scanFrame.layout?.takeIf { it.isValid() } ?: return
         recognizing = true
         readButton.isEnabled = false
         useButton.isEnabled = false
-        scanFrame.isEnabled = false
-        scanFrame.invalidate()
         reading = null
         statusText.text = "ピント調整中です。スマホを動かさないでください。"
-        val center = guide.corners.let { points ->
-            previewView.meteringPointFactory.createPoint(points.map { it.x }.average().toFloat() * previewView.width,
-                points.map { it.y }.average().toFloat() * previewView.height, 0.25f)
-        }
+        val center = previewView.meteringPointFactory.createPoint(previewView.width / 2f, previewView.height / 2f, 0.5f)
         val action = FocusMeteringAction.Builder(center,
             FocusMeteringAction.FLAG_AF or FocusMeteringAction.FLAG_AE or FocusMeteringAction.FLAG_AWB)
             .setAutoCancelDuration(5, TimeUnit.SECONDS).build()
         try {
             if (!boundCamera.cameraInfo.isFocusMeteringSupported(action)) {
-                takePicture(capture, guide)
+                takePicture(capture)
                 return
             }
             val future = boundCamera.cameraControl.startFocusAndMetering(action)
@@ -283,7 +275,7 @@ class VitalCameraActivity : ComponentActivity() {
                     val focused = runCatching { future.get().isFocusSuccessful }.getOrDefault(false)
                     when {
                         isDestroyed || isFinishing -> finishRecognition()
-                        focused -> takePicture(capture, guide)
+                        focused -> takePicture(capture)
                         else -> captureFailed("ピントを合わせられませんでした。少し離して読み取り直してください。")
                     }
                 }
@@ -293,7 +285,7 @@ class VitalCameraActivity : ComponentActivity() {
         }
     }
 
-    private fun takePicture(capture: ImageCapture, guide: VitalScanLayout) {
+    private fun takePicture(capture: ImageCapture) {
         if (isDestroyed || isFinishing) { finishRecognition(); return }
         statusText.text = "撮影しています。スマホを動かさずにお待ちください。"
         try {
@@ -306,7 +298,7 @@ class VitalCameraActivity : ComponentActivity() {
                         when {
                             isDestroyed || isFinishing -> { bitmap?.recycle(); finishRecognition() }
                             bitmap == null -> captureFailed("撮影画像を取得できませんでした。読み取り直してください。")
-                            else -> recognizeFrame(bitmap, guide)
+                            else -> recognizeFrame(bitmap)
                         }
                     }
                 }
@@ -320,33 +312,17 @@ class VitalCameraActivity : ComponentActivity() {
         }
     }
 
-    private fun recognizeFrame(bitmap: Bitmap, guide: VitalScanLayout) {
+    private fun recognizeFrame(bitmap: Bitmap) {
         capturedFrame = bitmap
         frozenView.setImageBitmap(bitmap)
         frozenView.visibility = View.VISIBLE
-        statusText.text = "3つの枠を個別に読み取っています…"
+        statusText.text = "表示から最高血圧・最低血圧・脈拍を探しています…"
         try {
             val textRecognizer = recognizer ?: TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS).also { recognizer = it }
             val completion = TaskCompletionSource<VitalCameraReading?>()
             recognitionExecutor.execute {
                 try {
-                    val rows = cropVitalRows(bitmap, guide)
-                    val values = try {
-                        rows.map { row ->
-                            // Await on the worker only. Keep pixels alive until ML Kit completes.
-                            val result = runCatching { Tasks.await(textRecognizer.process(InputImage.fromBitmap(row, 0))) }.getOrNull()
-                            val elements = result?.textBlocks?.flatMap { it.lines }?.flatMap { it.elements }.orEmpty()
-                            if (elements.any { it.boundingBox == null }) return@map null
-                            val positioned = elements.map { element ->
-                                val box = checkNotNull(element.boundingBox)
-                                VitalOcrElement(element.text, box.left, box.top, box.right, box.bottom)
-                            }
-                            selectFramedVitalCameraNumber(positioned, row.width, row.height, readVitalRowPixels(row))
-                        }
-                    } finally {
-                        rows.forEach { it.recycle() }
-                    }
-                    completion.setResult(if (values.any { it == null }) null else vitalReadingFromNumbers(values.filterNotNull()))
+                    completion.setResult(readAutomaticVitals(bitmap, textRecognizer))
                 } catch (error: Exception) {
                     completion.setException(error)
                 }
@@ -355,23 +331,60 @@ class VitalCameraActivity : ComponentActivity() {
                 .addOnSuccessListener { result ->
                     if (isDestroyed || isFinishing) return@addOnSuccessListener
                     reading = result
-                    val value = reading
-                    statusText.text = if (value == null) {
-                        "読み取れませんでした。反射を避け、数字と枠・区切り線の間に余白を残してください。"
+                    statusText.text = if (result == null) {
+                        "3項目を確認できませんでした。\n反射を避け、表示全体がはっきり写るように撮り直してください。戻って手入力もできます。"
                     } else {
-                        "最高血圧 ${value.systolic}\n最低血圧 ${value.diastolic}\n脈拍 ${value.heartRate}\n表示と一致するか確認してください。"
+                        "最高血圧 ${result.systolic}\n最低血圧 ${result.diastolic}\n脈拍 ${result.heartRate}\n表示と一致するか確認してください。"
                     }
-                    useButton.isEnabled = value != null
+                    useButton.isEnabled = result != null
                 }
                 .addOnFailureListener {
-                    if (!isDestroyed && !isFinishing) statusText.text = "読み取りに失敗しました。読み取り直すか、戻って手入力してください。"
+                    if (!isDestroyed && !isFinishing) statusText.text = "読み取りに失敗しました。撮り直すか、戻って手入力してください。"
                 }
-                .addOnCompleteListener {
-                    finishRecognition()
-                }
+                .addOnCompleteListener { finishRecognition() }
         } catch (_: Exception) {
             statusText.text = "文字認識を起動できません。戻って手入力または音声入力をご利用ください。"
             finishRecognition()
+        }
+    }
+
+    /** Worker thread only: keep each bitmap alive until its ML Kit task finishes. */
+    private fun readAutomaticVitals(bitmap: Bitmap, textRecognizer: TextRecognizer): VitalCameraReading? {
+        fun recognize(source: Bitmap): List<VitalOcrElement>? {
+            val text = Tasks.await(textRecognizer.process(InputImage.fromBitmap(source, 0)))
+            val elements = text.textBlocks.flatMap { it.lines }.flatMap { it.elements }
+            if (elements.any { it.boundingBox == null }) return null
+            return elements.map { element ->
+                val box = checkNotNull(element.boundingBox)
+                VitalOcrElement(element.text, box.left, box.top, box.right, box.bottom)
+            }
+        }
+
+        val image = vitalRecognitionBitmap(bitmap, 1600)
+        try {
+            val elements = recognize(image) ?: return null
+            val analysis = analyzeVitalImagePixels(image, elements)
+            when (analysis.display.result) {
+                is SevenSegmentVitalResult.Recognized -> return selectWholeImageVitalReading(elements, analysis.display)
+                SevenSegmentVitalResult.Uncertain -> return null
+                SevenSegmentVitalResult.NotDetected -> Unit
+            }
+            // Three arbitrary numbers do not establish SYS/DIA/pulse. Without a
+            // complete pixel layout, the printed labels must identify each row.
+            val regions = labelledAutomaticVitalRows(elements, image.width, image.height, analysis.content) ?: return null
+            val values = regions.map { region ->
+                val row = Bitmap.createBitmap(image, region.left, region.top, region.width, region.height)
+                try {
+                    val rowElements = recognize(row) ?: return null
+                    selectAutomaticVitalCameraNumber(elementsInVitalRegion(elements, region), rowElements,
+                        row.width, row.height, readVitalRowPixels(row)) ?: return null
+                } finally {
+                    row.recycle()
+                }
+            }
+            return vitalReadingFromNumbers(values)
+        } finally {
+            if (image !== bitmap) image.recycle()
         }
     }
 
@@ -384,9 +397,7 @@ class VitalCameraActivity : ComponentActivity() {
             recognitionExecutor.shutdown()
             return
         }
-        scanFrame.isEnabled = capturedFrame == null
-        scanFrame.invalidate()
-        readButton.text = if (capturedFrame == null) "読み取る" else "読み取り直す"
+        readButton.text = if (capturedFrame == null) "読み取る" else "撮り直す"
         readButton.isEnabled = true
     }
 
@@ -402,13 +413,11 @@ class VitalCameraActivity : ComponentActivity() {
         frozenView.visibility = View.GONE
         capturedFrame?.recycle()
         capturedFrame = null
-        scanFrame.isEnabled = true
-        scanFrame.invalidate()
         if (preview == null) {
             showCameraError()
             return
         }
-        statusText.text = "3つの枠を合わせて「読み取る」を押してください。ピントを合わせて撮影します。"
+        statusText.text = "表示全体を写して「読み取る」を押してください。ピントを合わせて撮影します。"
         readButton.text = "読み取る"
         readButton.isEnabled = previewView.previewStreamState.value == PreviewView.StreamState.STREAMING
     }

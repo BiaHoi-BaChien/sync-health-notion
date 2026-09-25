@@ -5,6 +5,125 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 class SevenSegmentVitalReaderTest {
+    private fun automaticOcr(compact: Boolean = false): List<VitalOcrElement> {
+        val tops = if (compact) listOf(20, 130, 248) else listOf(20, 155, 290)
+        return listOf("180", "60", "65").mapIndexed { index, value ->
+            VitalOcrElement(value, if (index == 0) 80 else 115, tops[index], 275,
+                tops[index] + if (compact && index == 2) 68 else 102)
+        }
+    }
+
+    @Test
+    fun automaticRecognitionRecoversMissingOcrRowsFromCompletePixels() {
+        for (compact in listOf(false, true)) {
+            val pixels = display(listOf("180", "60", "65"), compact)
+            val all = automaticOcr(compact)
+            for (elements in listOf(all, emptyList()) + all.indices.map { missing -> all.filterIndexed { index, _ -> index != missing } }) {
+                val analysis = readAutomaticVitalPixels(pixels, WIDTH, HEIGHT, elements)
+                assertEquals("compact=$compact OCR=$elements", VitalCameraReading(180, 60, 65),
+                    selectWholeImageVitalReading(elements, analysis.display))
+            }
+        }
+    }
+
+    @Test
+    fun automaticRecognitionRejectsMemoryNumbersWhenOcrMissesThePulse() {
+        val elements = automaticOcr(true).take(2) + VitalOcrElement("18", 165, 330, 275, 398)
+        val pixels = display(listOf("180", "60", "65", "18"), compact = true)
+        val analysis = readAutomaticVitalPixels(pixels, WIDTH, HEIGHT, elements)
+        assertEquals(SevenSegmentVitalResult.Uncertain, analysis.display.result)
+        assertNull(selectWholeImageVitalReading(elements, analysis.display))
+    }
+
+    @Test
+    fun automaticRecognitionChecksSmallUnselectedRowsBelowTheColumnCutoff() {
+        val original = display(listOf("180", "60", "65", "18"), compact = true)
+        for (pulseHeight in listOf(31, 20, 14)) {
+            val pixels = original.copyOf()
+            // Below both the OCR prominence filter and the whole-column row cutoff;
+            // even a distorted row too short for decoding must not be discarded.
+            for (y in 248 until 316) for (x in 0 until WIDTH) pixels[y * WIDTH + x] = 0xffaaaaaa.toInt()
+            for (y in 0 until pulseHeight) original.copyInto(pixels, (248 + y) * WIDTH,
+                (248 + y * 68 / pulseHeight) * WIDTH, (249 + y * 68 / pulseHeight) * WIDTH)
+            val memory = VitalOcrElement("18", 165, 330, 275, 398)
+            val smallPulse = VitalOcrElement("65", 165, 248, 275, 248 + pulseHeight)
+            for (elements in listOf(automaticOcr(true).take(2) + memory, automaticOcr(true).take(2) + smallPulse + memory)) {
+                val analysis = readAutomaticVitalPixels(pixels, WIDTH, HEIGHT, elements)
+                assertEquals("pulseHeight=$pulseHeight", SevenSegmentVitalResult.Uncertain, analysis.display.result)
+                assertNull(selectWholeImageVitalReading(elements, analysis.display))
+            }
+        }
+    }
+
+    @Test
+    fun automaticRecognitionExcludesContinuousLcdSidesWithoutManualCropping() {
+        for (compact in listOf(false, true)) for (sides in listOf(listOf(4 until 12), listOf(288 until 296), listOf(4 until 12, 288 until 296))) {
+            val pixels = display(listOf("180", "60", "65"), compact)
+            for (side in sides) for (y in 4 until 550) for (x in side) pixels[y * WIDTH + x] = 0xff222222.toInt()
+            val all = automaticOcr(compact)
+            for (elements in listOf(all) + all.indices.map { missing -> all.filterIndexed { index, _ -> index != missing } }) {
+                val analysis = readAutomaticVitalPixels(pixels, WIDTH, HEIGHT, elements)
+                assertEquals("compact=$compact sides=$sides OCR=$elements", VitalCameraReading(180, 60, 65),
+                    selectWholeImageVitalReading(elements, analysis.display))
+            }
+        }
+    }
+
+    @Test
+    fun automaticBorderRemovalCannotHideAttachedLeadingStrokes() {
+        val original = display(listOf("180", "60", "65"))
+        val shift = 98
+        val pixels = IntArray(WIDTH * HEIGHT) { 0xffaaaaaa.toInt() }
+        for (y in 0 until HEIGHT) original.copyInto(pixels, y * WIDTH, y * WIDTH + shift, (y + 1) * WIDTH)
+        for (y in 4 until 550) for (x in 0 until 3) pixels[y * WIDTH + x] = 0xff222222.toInt()
+        val elements = automaticOcr().map { it.copy(text = if (it.text == "180") "80" else it.text, left = 115 - shift, right = it.right - shift) }
+        val analysis = readAutomaticVitalPixels(pixels, WIDTH, HEIGHT, elements)
+        assertEquals(SevenSegmentVitalResult.Uncertain, analysis.display.result)
+        assertNull(selectWholeImageVitalReading(elements, analysis.display))
+    }
+
+    @Test
+    fun automaticWholeImageRecognitionRetainsPartialAndFaintLeadingDigitChecks() {
+        for (compact in listOf(false, true)) for (shade in listOf(34, 134, 142, 150)) {
+            val pixels = display(listOf("180", "60", "65"), compact)
+            val faded = 0xff000000.toInt() or (shade shl 16) or (shade shl 8) or shade
+            for (y in 20 until 125) for (x in 78 until 108) {
+                val index = y * WIDTH + x
+                if (y >= 70) pixels[index] = 0xffaaaaaa.toInt()
+                else if (pixels[index] == 0xff222222.toInt()) pixels[index] = faded
+            }
+            val elements = automaticOcr(compact).map { if (it.text == "180") it.copy(text = "80", left = 115) else it }
+            val analysis = readAutomaticVitalPixels(pixels, WIDTH, HEIGHT, elements)
+            assertEquals("compact=$compact shade=$shade", SevenSegmentVitalResult.Uncertain, analysis.display.result)
+            assertNull(selectWholeImageVitalReading(elements, analysis.display))
+        }
+    }
+
+    @Test
+    fun automaticallyLocatedRowsReadCompleteDisplaysAndRejectMissedLeadingDigits() {
+        for (compact in listOf(false, true)) {
+            val pixels = display(listOf("180", "60", "65"), compact)
+            val tops = if (compact) listOf(20, 130, 248) else listOf(20, 155, 290)
+            val elements = listOf("180", "60", "65").mapIndexed { index, value ->
+                VitalOcrElement(value, if (index == 0) 80 else 115, tops[index], 275,
+                    tops[index] + if (compact && index == 2) 68 else 102)
+            }
+            fun read(original: List<VitalOcrElement>): List<Int?> = automaticVitalRows(original, WIDTH, HEIGHT)!!.map { region ->
+                val row = IntArray(region.width * region.height)
+                for (y in 0 until region.height) pixels.copyInto(row, y * region.width,
+                    (y + region.top) * WIDTH + region.left, (y + region.top) * WIDTH + region.right)
+                val detected = elementsInVitalRegion(original, region)
+                selectAutomaticVitalCameraNumber(detected, detected, region.width, region.height,
+                    readSevenSegmentNumber(row, region.width, region.height))
+            }
+            assertEquals("compact=$compact", listOf(180, 60, 65), read(elements))
+            val missed = elements.toMutableList().apply { this[0] = this[0].copy(text = "80", left = 115) }
+            assertNull("complete leading 1, compact=$compact", read(missed)[0])
+            for (y in 70 until 125) for (x in 78 until 108) pixels[y * WIDTH + x] = 0xffaaaaaa.toInt()
+            assertNull("partial leading 1, compact=$compact", read(missed)[0])
+        }
+    }
+
     @Test
     fun readsEachFramedNumberIndependentlyIncludingSmallPulse() {
         for (compact in listOf(false, true)) for (values in listOf(
