@@ -10,7 +10,6 @@ Each data type can be configured independently as `同期しない`, `HealthConn
 
 - Reads Health Connect step records, aggregates them by day, and writes one daily total row to Notion.
 - Saves manually entered blood pressure and heart rate values to Health Connect at the same measurement time.
-- Reads blood pressure monitor displays with the camera using bundled, on-device OCR, then lets users review and edit the values before registration.
 - Saves manually entered weight values, including voice input rounded to one decimal place, to Health Connect.
 - Lets users independently select or disable completion sounds for successful manual data entry and synchronization, including an original manual-sync chime.
 - Reads Health Connect blood pressure records, pairs heart rate samples recorded at the same time, and creates or updates Notion measurements using the timestamp through the minute as the key.
@@ -26,24 +25,6 @@ Each data type can be configured independently as `同期しない`, `HealthConn
 - Uses the latest 30 days as the sync window for Health Connect step, vital, and weight data.
 - Uses blood pressure as the base vital measurement. Heart-rate-only records are not sent to Notion.
 - Uses the measurement timestamp through the minute as the vital upsert key in both sync directions. Records are skipped when systolic blood pressure, diastolic blood pressure, and heart rate are also unchanged.
-
-## Camera vital input
-
-Open manual vital entry and tap the camera icon. Show the entire blood pressure monitor display and tap `読み取る`. There are no adjustable frames, dividers, or alignment handles. Hold the phone still while focus and exposure settle; the app automatically locates the numbers. Compare the frozen image and all three recognized values, then tap `入力欄に反映`. Review or correct the values and tap `Health Connectに登録` as usual. The measurement time remains the time of registration. Use `撮り直す` to return to the camera if the image is unclear or recognition fails.
-
-Recognition uses CameraX `ImageCapture` in quality mode with flash disabled. Preview and capture share a `ViewPort`; the captured image's crop rectangle and rotation are applied before recognition. Capture rotation follows display changes, including a 180-degree turn, and is refreshed on resume and before capture. A focus failure or timeout requires a retry. Cameras without region metering support still use the normal ImageCapture auto-exposure/focus pipeline.
-
-On-device OCR first searches the full photo, bounded to 1600 pixels on its longest side. The seven-segment reader independently checks the whole image at up to 960 pixels and retains the positions of detected numbers. Partial OCR is supported when the complete pixel reading agrees with every available OCR number at the same physical row. Extra numbers, conflicting values, and unreadable intervening rows prevent a memory number from replacing a missed pulse. There is no manual perspective correction: strong angles, glare, blur, or an ambiguous layout can still require a new photo.
-
-Straight, narrow LCD side borders can be excluded automatically only when continuous through multiple measurement rows and separate from digit strokes. Attached or clipped strokes remain uncertain. If the whole-image pixel reader reports `NotDetected`, all three OCR rows must have corresponding SYS / DIA / pulse labels before row crops are attempted. Those crops retain horizontal context and are checked by OCR and the seven-segment reader. Signs, decimals, partially intersecting text, conflicting OCR readings before/after cropping, and uncertain pixel readings prevent acceptance. Unknown or split OCR glyphs require an independent complete pixel reading. All three values must pass the existing measurement-input checks; partial results cannot be applied.
-
-The pixel reader retains its contrast-consistency, partial-digit, and boundary checks, including the regression where a partially missing leading `1` in `180 / 60 / 65` could become `80 / 60 / 65`. A sufficiently faint stroke can disappear at every contrast level, so matching results do not prove that the digits are correct. Always compare the suggested values with the physical display before registration. Failure or cancellation does not register measurements.
-
-The OCR model is bundled in the APK and works offline from the first use. Camera images are processed in memory, are not saved, and are not sent to OpenAI, Notion, or another image-recognition service. Existing synchronization directions and registration checks are unchanged.
-
-Local verification includes missing OCR rows, missed small pulse rows beside memory numbers, continuous LCD sides, attached fragments, spatial OCR conflicts, labelled row selection, and the existing seven-segment regressions. Optional private-photo tests use `VITAL_CAMERA_TEST_IMAGE_DIR` containing `Screenshot_20260921-193044.png`, `PXL_20260918_154909527.jpg`, and `PXL_20260918_154908396.jpg`; the additional `1000001671.png` fixture checks clipped/bordered rows from the reported screenshot. These tests do not run Android CameraX or ML Kit, and do not establish full-photo automatic recognition accuracy. Personal photos are not versioned.
-
-Device verification: check first use in airplane mode, permission denial/grant, cancellation during focus/capture/OCR, portrait/landscape and 180-degree rotation, enlarged text, retry, and actual monitors at different positions, distances, and lighting. Confirm that no alignment controls appear and that returning from the camera only fills input fields; Health Connect registration still requires its registration button.
 
 ## Notion data source requirements
 

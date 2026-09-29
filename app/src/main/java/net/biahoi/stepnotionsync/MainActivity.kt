@@ -111,7 +111,6 @@ class MainActivity : ComponentActivity() {
     private lateinit var permissionLauncher: ActivityResultLauncher<Set<String>>
     private lateinit var voicePermissionLauncher: ActivityResultLauncher<String>
     private lateinit var voiceInputLauncher: ActivityResultLauncher<Intent>
-    private lateinit var vitalCameraLauncher: ActivityResultLauncher<Intent>
     private lateinit var statusText: TextView
     private lateinit var stepsPhoneDateText: TextView
     private lateinit var stepsNotionDateText: TextView
@@ -197,28 +196,6 @@ class MainActivity : ComponentActivity() {
                 ?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)
                 .orEmpty()
             applyManualVoiceResult(matches)
-        }
-        vitalCameraLauncher = registerForActivityResult(
-            ActivityResultContracts.StartActivityForResult()
-        ) { result ->
-            if (result.resultCode != Activity.RESULT_OK) return@registerForActivityResult
-            val data = result.data ?: return@registerForActivityResult
-            val systolic = data.getIntExtra(VitalCameraActivity.EXTRA_SYSTOLIC, 0)
-            val diastolic = data.getIntExtra(VitalCameraActivity.EXTRA_DIASTOLIC, 0)
-            val heartRate = data.getIntExtra(VitalCameraActivity.EXTRA_HEART_RATE, 0)
-            if (systolic !in 1..999 || diastolic !in 1 until systolic || heartRate !in 1..300) {
-                setStatusMessage("カメラの読み取り結果を確認できませんでした。", floating = true)
-                return@registerForActivityResult
-            }
-            val values = listOf(systolic.toString(), diastolic.toString(), heartRate.toString())
-            val inputs = manualVitalVoiceInputs
-            if (inputs == null) {
-                showManualVitalEntryDialog(values)
-            } else {
-                inputs.systolic.setText(values[0])
-                inputs.diastolic.setText(values[1])
-                inputs.heartRate.setText(values[2])
-            }
         }
         migrateAutoSyncScheduleIfNeeded()
         applyUiMode()
@@ -1801,8 +1778,7 @@ class MainActivity : ComponentActivity() {
         voiceDescription: String,
         content: LinearLayout.(ImageButton) -> Unit,
         onRegister: (Dialog) -> Unit,
-        onDismiss: () -> Unit,
-        onCameraInput: (() -> Unit)? = null
+        onDismiss: () -> Unit
     ): Dialog {
         val density = resources.displayMetrics.density
         lateinit var dialog: Dialog
@@ -1856,21 +1832,6 @@ class MainActivity : ComponentActivity() {
             }
         }
         titleRow.addView(micButton)
-        if (onCameraInput != null) {
-            titleRow.addView(ImageButton(this).apply {
-                contentDescription = "カメラでバイタルを入力"
-                tooltipText = contentDescription
-                setImageResource(R.drawable.ic_camera)
-                background = GradientDrawable().apply {
-                    cornerRadius = 10 * density
-                    setColor(Color.parseColor("#44D7B6"))
-                }
-                layoutParams = LinearLayout.LayoutParams((48 * density).toInt(), (48 * density).toInt()).apply {
-                    leftMargin = (8 * density).toInt()
-                }
-                setOnClickListener { onCameraInput() }
-            })
-        }
         panel.addView(titleRow)
         panel.addView(TextView(this).apply {
             text = description
@@ -2033,9 +1994,6 @@ class MainActivity : ComponentActivity() {
                         manualVoiceTarget = null
                     }
                 }
-            },
-            onCameraInput = {
-                vitalCameraLauncher.launch(Intent(this, VitalCameraActivity::class.java))
             }
         )
     }
