@@ -25,6 +25,9 @@
         android:theme="@style/AppTheme"
         android:usesCleartextTraffic="false">
         <activity
+            android:name=".VitalImageExperimentActivity"
+            android:exported="false" />
+        <activity
             android:name=".PermissionsRationaleActivity"
             android:exported="true">
             <intent-filter>

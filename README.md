@@ -26,6 +26,52 @@ Each data type can be configured independently as `同期しない`, `HealthConn
 - Uses blood pressure as the base vital measurement. Heart-rate-only records are not sent to Notion.
 - Uses the measurement timestamp through the minute as the vital upsert key in both sync directions. Records are skipped when systolic blood pressure, diastolic blood pressure, and heart rate are also unchanged.
 
+## Gemini Nano saved-image experiment
+
+`バイタルをHealth Connectに登録` → `画像から入力（検証）` checks the actual device with ML Kit Prompt API before enabling image selection. It shows `AVAILABLE`, `DOWNLOADABLE`, `DOWNLOADING`, or `UNAVAILABLE`, and the base model name when available. A listed supported device is not proof that its model is ready. Model download is an explicit button and requires network access.
+
+Select one locally saved image using the system document picker. The image is decoded with orientation handling and downscaled to a maximum edge of 1600 pixels without cropping, then passed directly to Gemini Nano through AICore. No OCR, seven-segment reader, cloud inference fallback, camera, API key, or image upload is used. The app does not persist the image URI, image, or raw model response, or log health values. The experiment screen suppresses screenshots and recent-app previews. The existing app still uses the network for Notion sync, and the SDK/AICore may use it for model setup and operational telemetry; this is not a network-disabled app.
+
+Systolic, diastolic, and pulse are unverified candidates. Unreadable fields stay empty; malformed, multiple, or truncated responses are rejected. Contradictory pressure values are cleared instead of swapped. A generative model can still return a plausible but incorrect number, so review the image and use `候補を確認・修正する` to edit the existing input fields. Only the user's existing `Health Connectに登録` action saves values. The measurement timestamp remains the registration time, not the photo timestamp; use a fresh measurement when actually saving. Manual entry, voice input, validation, and sync keep their existing behavior.
+
+`読取の検証詳細を表示` shows the response count, finish reason, and bounded model response text on the protected experiment screen. These details remain in memory and are not written to logs/files, copied to the clipboard, or registered as health records. Failure messages distinguish no response, multiple responses, output-length truncation, abnormal completion, format rejection, and explicitly unknown values. A format rejection alone does not establish that the model failed to read the digits.
+
+### Device evaluation protocol
+
+1. Record device/Android version, AICore version, SDK version (`genai-prompt:1.0.0-beta4`), displayed model name/status, and model preparation time separately. If unavailable, retain the status and retry after AICore initialization; do not assume the hardware is unsupported.
+2. Begin with one local blood-pressure image. Keep the photo on the phone. Record the true three values by personally reading the device/image, then the initial candidates before correction. Do not add private photos or values to Git or logs.
+3. `処理時間` includes the status recheck, image decode, and inference; it does not include image picking. There is no warmup, so separate first and subsequent runs. The registration result reports total elapsed time from the first image-selection button press through picking, retries, confirmation, correction, warnings, and successful Health Connect insertion. Model preparation is excluded. Both the screen's back button and system Back return timing metadata without applying candidates, so retries from the same entry retain the first start time and attempt count. Closing the entry dialog and opening a new entry starts a new trial.
+4. For manual comparison, total time starts when the normal vital-entry dialog opens and ends after successful insertion. Use the same image and alternate trial order to reduce memorization effects. Voice-assisted trials remain labelled separately through image retries. If voice was used before the first image selection, the total retains the entry-dialog start time to include that voice operation. Record failed/cancelled trials separately; they are not successful registrations. Rotation preserves the active experiment in memory; process death restarts it without restoring a private image.
+5. Use fresh measurements or a separately approved test environment for actual registration. Do not register the same photo repeatedly into the user's real Health Connect/Notion data just to benchmark. When registration is not approved, stop before saving and measure time to a corrected draft externally; label it as excluding registration.
+6. After the first image works, compare multiple lighting/angle/blur cases. Record per-field exact matches, complete three-field matches, unknowns, wrong candidates, corrections, retry counts, processing time, and end-to-end time. Report cold/warm latency and median total time, including correction cost and failures. Do not claim accuracy from parser tests or one image. Add camera capture only after accuracy and total effort demonstrate an advantage over manual entry.
+
+| Trial | Method | Cold/warm | Initial matches / 3 | Unknown / wrong | Corrections / retries | Processing seconds | Total seconds | Saved / draft / failed |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| (keep results locally) | image / manual / voice | | | | | | | |
+
+References: [Prompt API setup](https://developers.google.com/ml-kit/genai/prompt/android/get-started), [device support](https://developers.google.com/ml-kit/genai), [ML Kit privacy](https://developers.google.com/ml-kit/terms), [SDK data disclosure](https://developers.google.com/ml-kit/android-data-disclosure).
+
+### First device checkpoint (2026-10-02, Ho Chi Minh time)
+
+- Pixel 9 / Android 17, AICore `0.release.prod_aicore_20260820.00_RC08.974405357`. The signed experimental APK (`0.3.6` / `130`) was installed over the existing app with its data retained.
+- The actual `checkStatus()` result was `DOWNLOADABLE`. Download was requested, but completion and the base model name have not yet been confirmed. The image-selection button stays disabled until `AVAILABLE`. Keep the experiment in the foreground; it keeps the screen awake during preparation and inference. This checkpoint does not establish image recognition accuracy or speed.
+- 71 JVM tests passed; debug/release builds, `lintDebug` (zero errors, warnings remain), and `git diff --check` passed. Local Java HTTPS trust failed for new Maven Central artifacts, so these checks used official checksum-verified artifacts in an ignored temporary Maven repository via a local Gradle init script. Source repository URLs, the wrapper, and the Android Gradle Plugin were unchanged.
+- No blood-pressure image was exported, and no health record was registered or manually synchronized during this check. Image recognition, correction/registration timing, and an offline inference trial remain unverified. No camera integration or GitHub release was performed.
+
+### Saved-image follow-up (2026-10-02, Ho Chi Minh time)
+
+- The same Pixel 9 subsequently reported `AVAILABLE` with base model `nano-v3`. The user-supplied photo matched the existing on-device photo byte for byte; inference used that local copy.
+- The first diagnosed failure completed normally (`STOP`) in 3.3 seconds, but returned three unlabelled numbers. The parser correctly rejected the response, and visual comparison also found two incorrect fields. Shorter instructions restored the required labelled format in 3.6 seconds but did not fix those digit errors.
+- The final prompt explicitly requests `UNKNOWN` for digits obscured by glare, reflection, or low contrast. On the same photo it completed in 3.6 seconds with one visually matching field, one incorrect field, and one unknown field. These are results for one photo, not an accuracy estimate. Prompt instructions do not guarantee that the model abstains from an incorrect answer. No expected measurement values were supplied to the model or hardcoded into the app.
+- The candidates returned to the existing editable fields, with the unknown field empty. The draft was cancelled without registration. No manual sync was triggered. End-to-end registration timing, comparison against the user's manual entry, and offline inference remain unverified. This result does not justify camera integration.
+- The final APK was installed with existing data retained. All 71 JVM tests, debug/release builds, `lintDebug` (0 errors, 109 warnings), and `git diff --check` passed using the same temporary dependency-cache workaround described above. Private photos and measurement values are not included in the repository.
+
+### Timing review fixes (2026-10-02, Ho Chi Minh time)
+
+- Cancelling an image attempt now returns only timing metadata. Existing draft values remain unchanged, and subsequent attempts in the same entry retain the first start time and accumulated attempt count. An interrupted inference does not reuse a previous attempt's processing duration.
+- Input methods use explicit states so an image retry cannot erase prior voice use. The current method and attempt count are also shown in the entry dialog and preserved during activity recreation.
+- Seven regression tests cover cancelled reads, picker cancellation, interruption during inference, reopening without another read, and voice use before/after image input. All 78 JVM tests, debug/release builds, `lintDebug` (0 errors, 109 warnings), and `git diff --check` passed with the same local dependency-cache workaround. The updated APK signature was verified. Installation and device verification of these timing fixes are pending reconnection of the Pixel 9; no registration or manual sync was performed for this follow-up.
+
 ## Notion data source requirements
 
 The step data source must have:
