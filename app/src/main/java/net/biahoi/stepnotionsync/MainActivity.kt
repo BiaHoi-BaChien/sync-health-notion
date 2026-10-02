@@ -18,6 +18,7 @@ import android.media.SoundPool
 import android.media.ToneGenerator
 import android.net.Uri
 import android.os.Bundle
+import android.os.SystemClock
 import android.speech.RecognizerIntent
 import android.text.InputType
 import android.util.Log
@@ -111,6 +112,9 @@ class MainActivity : ComponentActivity() {
     private lateinit var permissionLauncher: ActivityResultLauncher<Set<String>>
     private lateinit var voicePermissionLauncher: ActivityResultLauncher<String>
     private lateinit var voiceInputLauncher: ActivityResultLauncher<Intent>
+    private lateinit var vitalImageLauncher: ActivityResultLauncher<Intent>
+    private var vitalEntryTiming = VitalEntryTiming(0)
+    private var vitalEntryTimingText: TextView? = null
     private lateinit var statusText: TextView
     private lateinit var stepsPhoneDateText: TextView
     private lateinit var stepsNotionDateText: TextView
@@ -197,17 +201,51 @@ class MainActivity : ComponentActivity() {
                 .orEmpty()
             applyManualVoiceResult(matches)
         }
+        vitalImageLauncher = registerForActivityResult(
+            ActivityResultContracts.StartActivityForResult()
+        ) { result ->
+            val data = result.data ?: return@registerForActivityResult
+            val inputs = manualVitalVoiceInputs ?: return@registerForActivityResult
+            val values = data.getStringArrayListExtra(VitalImageExperimentActivity.EXTRA_VALUES)
+                .takeIf { result.resultCode == Activity.RESULT_OK }
+            vitalEntryTiming = vitalEntryTiming.recordImageResult(
+                imageStartedAt = data.getLongExtra(VitalImageExperimentActivity.EXTRA_STARTED_AT, 0),
+                processingMillis = data.getLongExtra(VitalImageExperimentActivity.EXTRA_PROCESSING_MILLIS, -1)
+                    .takeIf { it >= 0 },
+                attempts = data.getIntExtra(VitalImageExperimentActivity.EXTRA_ATTEMPTS, 0),
+                candidatesApplied = values != null,
+            )
+            if (values != null) {
+                inputs.systolic.setText(values.getOrNull(0).orEmpty())
+                inputs.diastolic.setText(values.getOrNull(1).orEmpty())
+                inputs.heartRate.setText(values.getOrNull(2).orEmpty())
+            }
+            updateVitalEntryTimingText()
+        }
         migrateAutoSyncScheduleIfNeeded()
         applyUiMode()
         initializeOperationCompletedSoundPlayer()
         showTopPage()
         savedInstanceState?.getStringArrayList("manual_vital_draft")?.let {
-            showManualVitalEntryDialog(it)
+            showManualVitalEntryDialog(it, VitalEntryTiming(
+                savedInstanceState.getLong("vital_entry_started", SystemClock.elapsedRealtime()),
+                VitalEntryMethod.entries.firstOrNull {
+                    it.name == savedInstanceState.getString("vital_entry_method")
+                } ?: VitalEntryMethod.MANUAL,
+                savedInstanceState.getLong("vital_entry_processing", -1).takeIf { time -> time >= 0 },
+                savedInstanceState.getInt("vital_entry_attempts"),
+                savedInstanceState.getBoolean("vital_entry_image_started"),
+            ))
         }
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
         manualVitalVoiceInputs?.let {
+            outState.putLong("vital_entry_started", vitalEntryTiming.startedAt)
+            outState.putString("vital_entry_method", vitalEntryTiming.method.name)
+            outState.putLong("vital_entry_processing", vitalEntryTiming.processingMillis ?: -1)
+            outState.putInt("vital_entry_attempts", vitalEntryTiming.attempts)
+            outState.putBoolean("vital_entry_image_started", vitalEntryTiming.imageSelectionStarted)
             outState.putStringArrayList("manual_vital_draft", arrayListOf(
                 it.systolic.text.toString(), it.diastolic.text.toString(), it.heartRate.text.toString()
             ))
@@ -1884,8 +1922,9 @@ class MainActivity : ComponentActivity() {
             requestWindowFeature(Window.FEATURE_NO_TITLE)
             setCancelable(true)
             setCanceledOnTouchOutside(true)
-            setContentView(FrameLayout(this@MainActivity).apply {
-                addView(panel)
+            setContentView(ScrollView(this@MainActivity).apply {
+                isFillViewport = true
+                addView(FrameLayout(this@MainActivity).apply { addView(panel) })
             })
             window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
             window?.setDimAmount(0.64f)
@@ -1940,12 +1979,16 @@ class MainActivity : ComponentActivity() {
         )
     }
 
-    private fun showManualVitalEntryDialog(initialValues: List<String> = emptyList()) {
+    private fun showManualVitalEntryDialog(
+        initialValues: List<String> = emptyList(),
+        timing: VitalEntryTiming = VitalEntryTiming(SystemClock.elapsedRealtime()),
+    ) {
         if (currentSyncJob?.isActive == true) {
             setStatusMessage("同期中はバイタルを登録できません。", floating = true)
             return
         }
 
+        vitalEntryTiming = timing
         lateinit var systolicInput: EditText
         lateinit var diastolicInput: EditText
         lateinit var heartRateInput: EditText
@@ -1954,6 +1997,27 @@ class MainActivity : ComponentActivity() {
             description = "測定日時は登録時点の時刻で保存します。",
             voiceDescription = "音声でバイタルを入力",
             content = { micButton ->
+                addView(Button(this@MainActivity).apply {
+                    text = "画像から入力（検証）"
+                    isAllCaps = false
+                    setOnClickListener {
+                        // A cancelled image attempt must not be labelled as a pure manual trial.
+                        vitalEntryTiming = vitalEntryTiming.openImage()
+                        updateVitalEntryTimingText()
+                        vitalImageLauncher.launch(Intent(this@MainActivity, VitalImageExperimentActivity::class.java).apply {
+                            if (vitalEntryTiming.imageSelectionStarted) {
+                                putExtra(VitalImageExperimentActivity.EXTRA_STARTED_AT, vitalEntryTiming.startedAt)
+                                putExtra(VitalImageExperimentActivity.EXTRA_ATTEMPTS, vitalEntryTiming.attempts)
+                            }
+                        })
+                    }
+                })
+                vitalEntryTimingText = TextView(this@MainActivity).also {
+                    it.textSize = 13f
+                    it.setTextColor(Color.parseColor("#AAB7C4"))
+                    addView(it)
+                }
+                updateVitalEntryTimingText()
                 systolicInput = addNumberInput("最高血圧")
                 diastolicInput = addNumberInput("最低血圧")
                 heartRateInput = addNumberInput("脈拍")
@@ -1984,10 +2048,11 @@ class MainActivity : ComponentActivity() {
                     return@showManualEntryDialog
                 }
                 dialog.dismiss()
-                confirmAndRegisterManualVitalToHealthConnect(measurement)
+                confirmAndRegisterManualVitalToHealthConnect(measurement, vitalEntryTiming)
             },
             onDismiss = {
                 manualVitalEntryDialog = null
+                vitalEntryTimingText = null
                 if (manualVitalVoiceInputs?.systolic === systolicInput) {
                     manualVitalVoiceInputs = null
                     if (manualVoiceTarget == ManualVoiceTarget.VITALS) {
@@ -1999,9 +2064,21 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startManualVitalVoiceInput(inputs: ManualVitalVoiceInputs) {
+        vitalEntryTiming = vitalEntryTiming.useVoice()
+        updateVitalEntryTimingText()
         manualVitalVoiceInputs = inputs
         manualVoiceTarget = ManualVoiceTarget.VITALS
         startManualVoiceInput()
+    }
+
+    private fun updateVitalEntryTimingText() {
+        val timing = vitalEntryTiming
+        vitalEntryTimingText?.text = buildString {
+            append(timing.method.label)
+            if (timing.imageSelectionStarted) append(" / 試行${timing.attempts}回")
+            timing.processingMillis?.let { append(" / 最終処理: ${elapsedSeconds(it)}") }
+            append("\n値を確認・修正してから登録してください。総時間は登録完了時に表示します。")
+        }
     }
 
     private fun startManualWeightVoiceInput(input: EditText) {
@@ -2217,7 +2294,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun confirmAndRegisterManualVitalToHealthConnect(measurement: VitalMeasurement) {
+    private fun confirmAndRegisterManualVitalToHealthConnect(measurement: VitalMeasurement, timing: VitalEntryTiming) {
         if (currentSyncJob?.isActive == true) {
             return
         }
@@ -2245,7 +2322,7 @@ class MainActivity : ComponentActivity() {
                         return@launch
                     }
                 }
-                insertManualVitalToHealthConnect(client, measurement)
+                insertManualVitalToHealthConnect(client, measurement, timing)
             } catch (e: Exception) {
                 setStatusMessage("バイタルの登録に失敗しました: ${safeErrorMessage(e)}", floating = true)
             } finally {
@@ -2257,7 +2334,8 @@ class MainActivity : ComponentActivity() {
 
     private suspend fun insertManualVitalToHealthConnect(
         client: HealthConnectClient,
-        measurement: VitalMeasurement
+        measurement: VitalMeasurement,
+        timing: VitalEntryTiming,
     ) {
         val message = "バイタルをHealth Connectに登録中..."
         setStatusMessage(message)
@@ -2266,7 +2344,7 @@ class MainActivity : ComponentActivity() {
             client.insertRecords(measurement.toHealthConnectRecords())
         }
         playOperationCompletedSound(loadOperationSoundPreference(DATA_ENTRY_COMPLETED_SOUND_KEY))
-        setStatusMessage("バイタルをHealth Connectに登録しました。", floating = true)
+        setStatusMessage("バイタルをHealth Connectに登録しました。\n${timing.summary(SystemClock.elapsedRealtime())}", floating = true)
         refreshLatestDates()
     }
 
