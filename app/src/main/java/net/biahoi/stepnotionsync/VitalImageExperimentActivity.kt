@@ -1,11 +1,11 @@
 package net.biahoi.stepnotionsync
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
-import android.os.Build
 import android.os.Bundle
 import android.view.View
 import android.view.ViewGroup
@@ -25,7 +25,6 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
-import com.google.mlkit.genai.common.FeatureStatus
 import kotlinx.coroutines.launch
 
 class VitalImageExperimentActivity : ComponentActivity() {
@@ -34,24 +33,43 @@ class VitalImageExperimentActivity : ComponentActivity() {
     private lateinit var resultText: TextView
     private lateinit var preview: ImageView
     private lateinit var progress: ProgressBar
-    private lateinit var checkButton: Button
-    private lateinit var downloadButton: Button
     private lateinit var pickButton: Button
     private lateinit var applyButton: Button
     private lateinit var detailsButton: Button
     private lateinit var detailsText: TextView
     private var detailsExpanded = false
+    private var sourceDialog: AlertDialog? = null
     private val picker = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            result.data?.data?.let(model::readImage)
+        if (!model.imageInput.complete(VitalImageSource.PICKER)) {
+            model.reportInterruptedInput()
+            return@registerForActivityResult
         }
+        if (result.resultCode == Activity.RESULT_OK) {
+            result.data?.data?.let { model.readImage(it) }
+        }
+        render(model.state.value)
+    }
+    private val camera = registerForActivityResult(ActivityResultContracts.TakePicture()) { success ->
+        if (model.imageInput.complete(VitalImageSource.CAMERA)) {
+            model.finishCameraCapture(success)
+        } else {
+            model.discardCapture()
+            model.reportInterruptedInput()
+        }
+        render(model.state.value)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        VitalCaptureFiles.cleanOnProcessStart(cacheDir)
         // Keep the private image and candidates out of screenshots and recent-app previews.
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
-        model.continueTrial(intent.getLongExtra(EXTRA_STARTED_AT, 0), intent.getIntExtra(EXTRA_ATTEMPTS, 0))
+        model.continueTrial(
+            savedInstanceState?.getLong(EXTRA_STARTED_AT) ?: intent.getLongExtra(EXTRA_STARTED_AT, 0),
+            savedInstanceState?.getInt(EXTRA_ATTEMPTS) ?: intent.getIntExtra(EXTRA_ATTEMPTS, 0),
+        )
+        model.imageInput.open(restoredActivity = savedInstanceState != null)
+        detailsExpanded = savedInstanceState?.getBoolean("details_expanded") ?: false
         onBackPressedDispatcher.addCallback(this) { finishExperiment(applyCandidates = false) }
         val padding = dp(18)
         val content = LinearLayout(this).apply {
@@ -73,24 +91,12 @@ class VitalImageExperimentActivity : ComponentActivity() {
             setOnClickListener { action() }
         }
         text("画像から入力（検証）", 22f).typeface = Typeface.DEFAULT_BOLD
-        text("${Build.MANUFACTURER} ${Build.MODEL} / Android ${Build.VERSION.RELEASE}")
-        text("保存画像1枚を端末内のGemini Nanoで読み取ります。画像はクラウドに送信しません。モデルの準備には通信が必要です。")
+        text("選択・撮影した血圧計の画像を端末内のGemini Nanoで読み取ります。画像はクラウドに送信しません。")
         statusText = text("")
         progress = ProgressBar(this).also { content.addView(it) }
-        checkButton = button("端末・モデル状態を再確認") { model.checkStatus() }
-        downloadButton = button("モデルをダウンロード（通信あり）") { model.download() }
-        pickButton = button("端末内の画像を1枚選んで読み取る") {
-            try {
-                model.beginSelection()
-                picker.launch(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-                    type = "image/*"
-                    addCategory(Intent.CATEGORY_OPENABLE)
-                    putExtra(Intent.EXTRA_LOCAL_ONLY, true)
-                    putExtra(Intent.EXTRA_ALLOW_MULTIPLE, false)
-                })
-            } catch (_: ActivityNotFoundException) {
-                model.reportPickerError()
-            }
+        pickButton = button("画像を選択・撮影する") {
+            model.imageInput.chooseSource = true
+            showSourceDialog()
         }
         preview = ImageView(this).apply {
             contentDescription = "選択した血圧計画像"
@@ -127,13 +133,69 @@ class VitalImageExperimentActivity : ComponentActivity() {
         }
     }
 
-    private fun finishExperiment(applyCandidates: Boolean) {
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putLong(EXTRA_STARTED_AT, model.state.value.startedAt)
+        outState.putInt(EXTRA_ATTEMPTS, model.state.value.attempts)
+        outState.putBoolean("details_expanded", detailsExpanded)
+        super.onSaveInstanceState(outState)
+    }
+
+    override fun onDestroy() {
+        sourceDialog?.dismiss()
+        sourceDialog = null
+        super.onDestroy()
+    }
+
+    private fun showSourceDialog() {
+        if (sourceDialog != null || isFinishing) return
+        sourceDialog = AlertDialog.Builder(this)
+            .setTitle("画像から入力")
+            .setItems(arrayOf("画像を選択", "カメラで撮影")) { _, index ->
+                launchImageSource(if (index == 0) VitalImageSource.PICKER else VitalImageSource.CAMERA)
+            }
+            .setNegativeButton("キャンセル") { _, _ -> model.imageInput.chooseSource = false }
+            .setOnCancelListener { model.imageInput.chooseSource = false }
+            .create().apply {
+                setOnDismissListener { sourceDialog = null }
+                show()
+            }
+    }
+
+    private fun launchImageSource(source: VitalImageSource) {
+        model.imageInput.begin(source)
+        model.beginSelection()
+        try {
+            when (source) {
+                VitalImageSource.PICKER -> picker.launch(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                    type = "image/*"
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    putExtra(Intent.EXTRA_LOCAL_ONLY, true)
+                    putExtra(Intent.EXTRA_ALLOW_MULTIPLE, false)
+                })
+                VitalImageSource.CAMERA -> camera.launch(model.createCameraCapture())
+            }
+        } catch (_: ActivityNotFoundException) {
+            model.reportInputError(source)
+        } catch (_: SecurityException) {
+            model.reportInputError(source)
+        } catch (_: java.io.IOException) {
+            model.reportInputError(source)
+        } catch (_: IllegalArgumentException) {
+            model.reportInputError(source)
+        } catch (_: IllegalStateException) {
+            model.reportInputError(source)
+        }
+    }
+
+    private fun finishExperiment(applyCandidates: Boolean, openSettings: Boolean = false) {
+        if (isFinishing) return
         val state = model.state.value
         val values = if (applyCandidates) state.candidateValues() else null
         val data = Intent().apply {
             putExtra(EXTRA_STARTED_AT, state.startedAt)
             putExtra(EXTRA_PROCESSING_MILLIS, state.processingMillis ?: -1L)
             putExtra(EXTRA_ATTEMPTS, state.attempts)
+            putExtra(EXTRA_OPEN_SETTINGS, openSettings)
             if (values != null) {
                 putStringArrayListExtra(EXTRA_VALUES, values)
             }
@@ -143,24 +205,22 @@ class VitalImageExperimentActivity : ComponentActivity() {
     }
 
     private fun render(state: NanoVitalState) {
+        if (isFinishing) return
+        if (state.imageDestination() == NanoImageDestination.SETTINGS) {
+            finishExperiment(applyCandidates = false, openSettings = true)
+            return
+        }
         if (state.busy) {
             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         } else {
             window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         }
-        val status = when (state.status) {
-            FeatureStatus.AVAILABLE -> "AVAILABLE（利用可能）"
-            FeatureStatus.DOWNLOADABLE -> "DOWNLOADABLE（ダウンロード可能）"
-            FeatureStatus.DOWNLOADING -> "DOWNLOADING（準備中）"
-            FeatureStatus.UNAVAILABLE -> "UNAVAILABLE（現在利用不可）"
-            else -> "未確認"
-        }
-        statusText.text = "API状態（最終確認）: $status\nモデル: ${state.modelName}\n${state.message}"
+        statusText.text = if (model.imageInput.interrupted) {
+            "画像入力が中断されました。画像を再選択するか、もう一度撮影してください。\n${state.message}"
+        } else state.message
         progress.visibility = if (state.busy) View.VISIBLE else View.GONE
-        checkButton.isEnabled = !state.busy
-        downloadButton.visibility = if (state.status == FeatureStatus.DOWNLOADABLE) View.VISIBLE else View.GONE
-        downloadButton.isEnabled = !state.busy
-        pickButton.isEnabled = !state.busy && state.status == FeatureStatus.AVAILABLE
+        pickButton.isEnabled = state.imageDestination() == NanoImageDestination.IMAGE && model.imageInput.pendingSource == null
+        if (pickButton.isEnabled && model.imageInput.chooseSource) showSourceDialog()
         preview.setImageBitmap(state.bitmap)
         preview.visibility = if (state.bitmap == null) View.GONE else View.VISIBLE
         resultText.text = state.processingMillis?.let { elapsed ->
@@ -183,5 +243,6 @@ class VitalImageExperimentActivity : ComponentActivity() {
         internal const val EXTRA_STARTED_AT = "nano_vital_started_at"
         internal const val EXTRA_PROCESSING_MILLIS = "nano_vital_processing_millis"
         internal const val EXTRA_ATTEMPTS = "nano_vital_attempts"
+        internal const val EXTRA_OPEN_SETTINGS = "nano_vital_open_settings"
     }
 }
