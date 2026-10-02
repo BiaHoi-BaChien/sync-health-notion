@@ -1,11 +1,13 @@
 package net.biahoi.stepnotionsync
 
 import android.app.Application
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.ImageDecoder
 import android.net.Uri
 import android.os.SystemClock
 import androidx.lifecycle.AndroidViewModel
+import androidx.core.content.FileProvider
 import androidx.lifecycle.viewModelScope
 import com.google.mlkit.genai.common.DownloadStatus
 import com.google.mlkit.genai.common.FeatureStatus
@@ -23,6 +25,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import java.io.File
+
+internal enum class NanoImageDestination { WAIT, IMAGE, SETTINGS }
 
 internal data class NanoVitalState(
     val status: Int? = null,
@@ -36,6 +41,20 @@ internal data class NanoVitalState(
     val attempts: Int = 0,
     val responseDetails: String = "",
 ) {
+    fun imageDestination(): NanoImageDestination = when {
+        busy -> NanoImageDestination.WAIT
+        status == FeatureStatus.AVAILABLE -> NanoImageDestination.IMAGE
+        else -> NanoImageDestination.SETTINGS
+    }
+
+    fun statusLabel(): String = when (status) {
+        FeatureStatus.AVAILABLE -> "AVAILABLE（利用可能）"
+        FeatureStatus.DOWNLOADABLE -> "DOWNLOADABLE（ダウンロード可能）"
+        FeatureStatus.DOWNLOADING -> "DOWNLOADING（準備中）"
+        FeatureStatus.UNAVAILABLE -> "UNAVAILABLE（現在利用不可）"
+        else -> "未確認"
+    }
+
     fun candidateValues(): ArrayList<String>? {
         if (busy || processingMillis == null) return null
         return reading?.inputValues()?.takeIf { values -> values.any { it.isNotEmpty() } }
@@ -47,6 +66,9 @@ internal class NanoVitalViewModel(application: Application) : AndroidViewModel(a
     private val model by modelDelegate
     private val mutableState = MutableStateFlow(NanoVitalState())
     val state = mutableState.asStateFlow()
+    val imageInput = VitalImageInputSession()
+    private var captureFile: File? = null
+    private var captureUri: Uri? = null
 
     init {
         checkStatus()
@@ -60,8 +82,8 @@ internal class NanoVitalViewModel(application: Application) : AndroidViewModel(a
     private suspend fun updateStatus() {
         val status = withTimeout(30_000) { model.checkStatus() }
         mutableState.value = state.value.copy(status = status, message = when (status) {
-            FeatureStatus.AVAILABLE -> "利用可能です。端末に保存した画像を1枚選んでください。"
-            FeatureStatus.DOWNLOADABLE -> "モデルをダウンロードできます。準備後に画像を選べます。"
+            FeatureStatus.AVAILABLE -> "画像入力を利用できます。"
+            FeatureStatus.DOWNLOADABLE -> "モデルをダウンロードできます。準備後に画像入力を利用できます。"
             FeatureStatus.DOWNLOADING -> "モデルの準備中です。しばらく待って状態を再確認してください。"
             else -> "この端末では現在利用できません。AICoreの更新・初期化状況を確認してください。"
         })
@@ -109,11 +131,52 @@ internal class NanoVitalViewModel(application: Application) : AndroidViewModel(a
         }
     }
 
-    fun reportPickerError() {
-        mutableState.value = state.value.copy(message = "画像の選択を開始できませんでした。手入力を利用してください。")
+    fun reportInputError(source: VitalImageSource) {
+        imageInput.complete(source)
+        if (source == VitalImageSource.CAMERA) discardCapture()
+        val action = if (source == VitalImageSource.CAMERA) "カメラ" else "画像の選択"
+        mutableState.value = state.value.copy(message = "${action}を開始できませんでした。別の方法で画像を入力するか、手入力を利用してください。")
     }
 
-    fun readImage(uri: Uri) = runOperation {
+    fun reportInterruptedInput() {
+        mutableState.value = state.value.copy(message = "画像入力が中断されました。画像を再選択するか、もう一度撮影してください。")
+    }
+
+    fun createCameraCapture(): Uri {
+        discardCapture()
+        val application = getApplication<Application>()
+        val file = VitalCaptureFiles(application.cacheDir).create()
+        captureFile = file
+        return FileProvider.getUriForFile(application, "${application.packageName}.vital-images", file)
+            .also { captureUri = it }
+    }
+
+    fun finishCameraCapture(success: Boolean) {
+        val uri = captureUri
+        if (!success || uri == null) {
+            discardCapture()
+            return
+        }
+        revokeCaptureAccess()
+        readImage(uri, temporaryCapture = true)
+    }
+
+    private fun revokeCaptureAccess() {
+        captureUri?.let {
+            getApplication<Application>().revokeUriPermission(
+                it, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+            )
+        }
+    }
+
+    fun discardCapture() {
+        revokeCaptureAccess()
+        captureFile?.delete()
+        captureFile = null
+        captureUri = null
+    }
+
+    fun readImage(uri: Uri, temporaryCapture: Boolean = false) = runOperation {
         // A picker result delivered after process death belongs to an expired trial.
         check(state.value.startedAt > 0)
         mutableState.value = state.value.copy(
@@ -123,6 +186,7 @@ internal class NanoVitalViewModel(application: Application) : AndroidViewModel(a
         val started = SystemClock.elapsedRealtime()
         try {
             withTimeout(120_000) {
+                mutableState.value = state.value.copy(status = null)
                 val currentStatus = model.checkStatus()
                 mutableState.value = state.value.copy(status = currentStatus)
                 check(currentStatus == FeatureStatus.AVAILABLE)
@@ -139,6 +203,7 @@ internal class NanoVitalViewModel(application: Application) : AndroidViewModel(a
                         decoder.setOnPartialImageListener { false }
                     }
                 }
+                if (temporaryCapture) discardCapture()
                 mutableState.value = state.value.copy(bitmap = bitmap)
                 val response = model.generateContent(generateContentRequest(ImagePart(bitmap), TextPart(NANO_VITAL_PROMPT)) {
                     temperature = 0.0f
@@ -175,6 +240,7 @@ internal class NanoVitalViewModel(application: Application) : AndroidViewModel(a
                 )
             }
         } finally {
+            if (temporaryCapture) discardCapture()
             mutableState.value = state.value.copy(processingMillis = SystemClock.elapsedRealtime() - started)
         }
     }
@@ -202,6 +268,7 @@ internal class NanoVitalViewModel(application: Application) : AndroidViewModel(a
     }
 
     override fun onCleared() {
+        discardCapture()
         if (modelDelegate.isInitialized()) model.close()
         super.onCleared()
     }

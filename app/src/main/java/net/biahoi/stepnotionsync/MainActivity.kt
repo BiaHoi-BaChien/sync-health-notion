@@ -18,6 +18,7 @@ import android.media.SoundPool
 import android.media.ToneGenerator
 import android.net.Uri
 import android.os.Bundle
+import android.os.Build
 import android.os.SystemClock
 import android.speech.RecognizerIntent
 import android.text.InputType
@@ -27,6 +28,7 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.Window
+import android.view.WindowManager
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.EditText
@@ -40,9 +42,16 @@ import android.widget.Spinner
 import android.widget.TextView
 import android.widget.ArrayAdapter
 import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
+import androidx.activity.addCallback
+import androidx.activity.viewModels
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import com.google.mlkit.genai.common.FeatureStatus
 import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.PermissionController
 import androidx.health.connect.client.permission.HealthPermission
@@ -113,6 +122,11 @@ class MainActivity : ComponentActivity() {
     private lateinit var voicePermissionLauncher: ActivityResultLauncher<String>
     private lateinit var voiceInputLauncher: ActivityResultLauncher<Intent>
     private lateinit var vitalImageLauncher: ActivityResultLauncher<Intent>
+    private val nanoModel: NanoVitalViewModel by viewModels()
+    private var modelSettingsJob: Job? = null
+    private var showingSettings = false
+    private lateinit var settingsBackCallback: OnBackPressedCallback
+    private var pendingVitalDraft: VitalEntryDraft? = null
     private var vitalEntryTiming = VitalEntryTiming(0)
     private var vitalEntryTimingText: TextView? = null
     private lateinit var statusText: TextView
@@ -170,6 +184,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        VitalCaptureFiles.cleanOnProcessStart(cacheDir)
+        settingsBackCallback = onBackPressedDispatcher.addCallback(this, enabled = false) {
+            if (pendingVitalDraft != null) returnToVitalInput(startImage = false) else showTopPage()
+        }
         permissionLauncher = registerForActivityResult(
             PermissionController.createRequestPermissionResultContract()
         ) { granted ->
@@ -208,26 +226,31 @@ class MainActivity : ComponentActivity() {
             val inputs = manualVitalVoiceInputs ?: return@registerForActivityResult
             val values = data.getStringArrayListExtra(VitalImageExperimentActivity.EXTRA_VALUES)
                 .takeIf { result.resultCode == Activity.RESULT_OK }
-            vitalEntryTiming = vitalEntryTiming.recordImageResult(
+            val draft = currentVitalDraft()?.withImageResult(
+                candidates = values,
                 imageStartedAt = data.getLongExtra(VitalImageExperimentActivity.EXTRA_STARTED_AT, 0),
                 processingMillis = data.getLongExtra(VitalImageExperimentActivity.EXTRA_PROCESSING_MILLIS, -1)
                     .takeIf { it >= 0 },
                 attempts = data.getIntExtra(VitalImageExperimentActivity.EXTRA_ATTEMPTS, 0),
-                candidatesApplied = values != null,
-            )
+            ) ?: return@registerForActivityResult
+            vitalEntryTiming = draft.timing
             if (values != null) {
                 inputs.systolic.setText(values.getOrNull(0).orEmpty())
                 inputs.diastolic.setText(values.getOrNull(1).orEmpty())
                 inputs.heartRate.setText(values.getOrNull(2).orEmpty())
             }
             updateVitalEntryTimingText()
+            if (data.getBooleanExtra(VitalImageExperimentActivity.EXTRA_OPEN_SETTINGS, false)) {
+                pendingVitalDraft = draft
+                manualVitalEntryDialog?.dismiss()
+                showSettingsPage(focusImage = true)
+            }
         }
         migrateAutoSyncScheduleIfNeeded()
         applyUiMode()
         initializeOperationCompletedSoundPlayer()
-        showTopPage()
-        savedInstanceState?.getStringArrayList("manual_vital_draft")?.let {
-            showManualVitalEntryDialog(it, VitalEntryTiming(
+        val restoredDraft = savedInstanceState?.getStringArrayList("manual_vital_draft")?.let {
+            VitalEntryDraft(it, VitalEntryTiming(
                 savedInstanceState.getLong("vital_entry_started", SystemClock.elapsedRealtime()),
                 VitalEntryMethod.entries.firstOrNull {
                     it.name == savedInstanceState.getString("vital_entry_method")
@@ -237,23 +260,31 @@ class MainActivity : ComponentActivity() {
                 savedInstanceState.getBoolean("vital_entry_image_started"),
             ))
         }
+        // Permission callbacks also refresh these top-page views while settings is open.
+        showTopPage()
+        if (savedInstanceState?.getBoolean("showing_settings") == true) {
+            pendingVitalDraft = restoredDraft
+            showSettingsPage(focusImage = restoredDraft != null)
+        } else {
+            restoredDraft?.let { showManualVitalEntryDialog(it.values, it.timing) }
+        }
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
-        manualVitalVoiceInputs?.let {
-            outState.putLong("vital_entry_started", vitalEntryTiming.startedAt)
-            outState.putString("vital_entry_method", vitalEntryTiming.method.name)
-            outState.putLong("vital_entry_processing", vitalEntryTiming.processingMillis ?: -1)
-            outState.putInt("vital_entry_attempts", vitalEntryTiming.attempts)
-            outState.putBoolean("vital_entry_image_started", vitalEntryTiming.imageSelectionStarted)
-            outState.putStringArrayList("manual_vital_draft", arrayListOf(
-                it.systolic.text.toString(), it.diastolic.text.toString(), it.heartRate.text.toString()
-            ))
+        outState.putBoolean("showing_settings", showingSettings)
+        currentVitalDraft()?.let { draft ->
+            outState.putLong("vital_entry_started", draft.timing.startedAt)
+            outState.putString("vital_entry_method", draft.timing.method.name)
+            outState.putLong("vital_entry_processing", draft.timing.processingMillis ?: -1)
+            outState.putInt("vital_entry_attempts", draft.timing.attempts)
+            outState.putBoolean("vital_entry_image_started", draft.timing.imageSelectionStarted)
+            outState.putStringArrayList("manual_vital_draft", ArrayList(draft.values))
         }
         super.onSaveInstanceState(outState)
     }
 
     override fun onDestroy() {
+        modelSettingsJob?.cancel()
         manualVitalEntryDialog?.dismiss()
         currentSyncJob?.cancel()
         latestDateRefreshJob?.cancel()
@@ -270,6 +301,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showTopPage() {
+        showingSettings = false
+        settingsBackCallback.isEnabled = false
+        modelSettingsJob?.cancel()
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         val config = currentConfig()
         val palette = uiPalette()
         val density = resources.displayMetrics.density
@@ -410,7 +445,10 @@ class MainActivity : ComponentActivity() {
         refreshLatestDates()
     }
 
-    private fun showSettingsPage() {
+    private fun showSettingsPage(focusImage: Boolean = false) {
+        showingSettings = true
+        settingsBackCallback.isEnabled = true
+        modelSettingsJob?.cancel()
         val palette = uiPalette()
         val density = resources.displayMetrics.density
         val padding = (18 * density).toInt()
@@ -451,6 +489,26 @@ class MainActivity : ComponentActivity() {
             setTextColor(palette.mutedText)
             setPadding(0, (4 * density).toInt(), 0, (8 * density).toInt())
         })
+
+        val imageSettings = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        root.addView(imageSettings)
+        imageSettings.addSectionTitle(
+            title = "画像入力",
+            helpText = "血圧計の画像を端末内で読み取るモデルを準備します。モデルのダウンロードには通信が必要です。",
+        )
+        val modelStatusText = TextView(this).apply {
+            textSize = 14f
+            setTextColor(palette.secondaryText)
+            setPadding(0, (6 * density).toInt(), 0, (6 * density).toInt())
+        }
+        imageSettings.addView(modelStatusText)
+        val modelProgress = ProgressBar(this)
+        imageSettings.addView(modelProgress)
+        val checkModelButton = imageSettings.addButton("端末・モデル状態を再確認") { nanoModel.checkStatus() }
+        val downloadModelButton = imageSettings.addButton("モデルをダウンロード（通信あり）") { nanoModel.download() }
+        val returnToImageButton = if (pendingVitalDraft != null) {
+            imageSettings.addButton("画像入力に戻る") { returnToVitalInput(startImage = true) }
+        } else null
 
         root.addSectionTitle(
             title = "共通設定",
@@ -571,7 +629,9 @@ class MainActivity : ComponentActivity() {
             }
             setStatusMessage("設定を保存しました。", floating = true)
         }
-        root.addButton("トップへ戻る") { showTopPage() }
+        root.addButton(if (pendingVitalDraft != null) "バイタル入力に戻る" else "トップへ戻る") {
+            if (pendingVitalDraft != null) returnToVitalInput(startImage = false) else showTopPage()
+        }
         root.addTrademarkNotice()
 
         statusText = TextView(this).apply {
@@ -582,8 +642,26 @@ class MainActivity : ComponentActivity() {
         }
         root.addView(statusText)
 
-        setContentView(centeredScrollContent(root, padding))
+        val scroll = centeredScrollContent(root, padding)
+        setContentView(scroll)
         loadSettings()
+        nanoModel.checkStatus()
+        modelSettingsJob = lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                nanoModel.state.collect { state ->
+                    modelStatusText.text = "${Build.MANUFACTURER} ${Build.MODEL} / Android ${Build.VERSION.RELEASE}\n" +
+                        "状態: ${state.statusLabel()}\nモデル: ${state.modelName}\n${state.message}"
+                    modelProgress.visibility = if (state.busy) View.VISIBLE else View.GONE
+                    checkModelButton.isEnabled = !state.busy
+                    downloadModelButton.visibility = if (state.status == FeatureStatus.DOWNLOADABLE) View.VISIBLE else View.GONE
+                    downloadModelButton.isEnabled = !state.busy
+                    returnToImageButton?.isEnabled = state.imageDestination() == NanoImageDestination.IMAGE
+                    if (state.busy) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                }
+            }
+        }
+        if (focusImage) scroll.post { scroll.smoothScrollTo(0, imageSettings.top) }
     }
 
     private fun centeredScrollContent(
@@ -1816,7 +1894,8 @@ class MainActivity : ComponentActivity() {
         voiceDescription: String,
         content: LinearLayout.(ImageButton) -> Unit,
         onRegister: (Dialog) -> Unit,
-        onDismiss: () -> Unit
+        onDismiss: () -> Unit,
+        onImageInput: (() -> Unit)? = null,
     ): Dialog {
         val density = resources.displayMetrics.density
         lateinit var dialog: Dialog
@@ -1859,17 +1938,35 @@ class MainActivity : ComponentActivity() {
         })
         val micButton = ImageButton(this).apply {
             contentDescription = voiceDescription
+            tooltipText = voiceDescription
             setImageResource(R.drawable.ic_mic)
             setColorFilter(Color.parseColor("#081018"))
             background = GradientDrawable().apply {
                 cornerRadius = 10 * density
                 setColor(Color.parseColor("#44D7B6"))
             }
-            layoutParams = LinearLayout.LayoutParams((44 * density).toInt(), (44 * density).toInt()).apply {
+            val size = ((if (onImageInput != null) 48 else 44) * density).toInt()
+            layoutParams = LinearLayout.LayoutParams(size, size).apply {
                 leftMargin = (12 * density).toInt()
             }
         }
         titleRow.addView(micButton)
+        if (onImageInput != null) {
+            titleRow.addView(ImageButton(this).apply {
+                contentDescription = "画像から入力"
+                tooltipText = "画像から入力"
+                setImageResource(R.drawable.ic_camera)
+                setColorFilter(Color.parseColor("#081018"))
+                background = GradientDrawable().apply {
+                    cornerRadius = 10 * density
+                    setColor(Color.parseColor("#44D7B6"))
+                }
+                layoutParams = LinearLayout.LayoutParams((48 * density).toInt(), (48 * density).toInt()).apply {
+                    leftMargin = (8 * density).toInt()
+                }
+                setOnClickListener { onImageInput() }
+            })
+        }
         panel.addView(titleRow)
         panel.addView(TextView(this).apply {
             text = description
@@ -1996,22 +2093,8 @@ class MainActivity : ComponentActivity() {
             title = "バイタルをHealth Connectに登録",
             description = "測定日時は登録時点の時刻で保存します。",
             voiceDescription = "音声でバイタルを入力",
+            onImageInput = ::startVitalImageInput,
             content = { micButton ->
-                addView(Button(this@MainActivity).apply {
-                    text = "画像から入力（検証）"
-                    isAllCaps = false
-                    setOnClickListener {
-                        // A cancelled image attempt must not be labelled as a pure manual trial.
-                        vitalEntryTiming = vitalEntryTiming.openImage()
-                        updateVitalEntryTimingText()
-                        vitalImageLauncher.launch(Intent(this@MainActivity, VitalImageExperimentActivity::class.java).apply {
-                            if (vitalEntryTiming.imageSelectionStarted) {
-                                putExtra(VitalImageExperimentActivity.EXTRA_STARTED_AT, vitalEntryTiming.startedAt)
-                                putExtra(VitalImageExperimentActivity.EXTRA_ATTEMPTS, vitalEntryTiming.attempts)
-                            }
-                        })
-                    }
-                })
                 vitalEntryTimingText = TextView(this@MainActivity).also {
                     it.textSize = 13f
                     it.setTextColor(Color.parseColor("#AAB7C4"))
@@ -2061,6 +2144,31 @@ class MainActivity : ComponentActivity() {
                 }
             }
         )
+    }
+
+    private fun currentVitalDraft(): VitalEntryDraft? = manualVitalVoiceInputs?.let {
+        VitalEntryDraft(listOf(it.systolic.text.toString(), it.diastolic.text.toString(), it.heartRate.text.toString()), vitalEntryTiming)
+    } ?: pendingVitalDraft
+
+    private fun returnToVitalInput(startImage: Boolean) {
+        val draft = pendingVitalDraft ?: return
+        pendingVitalDraft = null
+        showTopPage()
+        showManualVitalEntryDialog(draft.values, draft.timing)
+        if (startImage) startVitalImageInput()
+    }
+
+    private fun startVitalImageInput() {
+        if (manualVitalVoiceInputs == null) return
+        // A cancelled image attempt must not be labelled as a pure manual trial.
+        vitalEntryTiming = vitalEntryTiming.openImage()
+        updateVitalEntryTimingText()
+        vitalImageLauncher.launch(Intent(this, VitalImageExperimentActivity::class.java).apply {
+            if (vitalEntryTiming.imageSelectionStarted) {
+                putExtra(VitalImageExperimentActivity.EXTRA_STARTED_AT, vitalEntryTiming.startedAt)
+                putExtra(VitalImageExperimentActivity.EXTRA_ATTEMPTS, vitalEntryTiming.attempts)
+            }
+        })
     }
 
     private fun startManualVitalVoiceInput(inputs: ManualVitalVoiceInputs) {
