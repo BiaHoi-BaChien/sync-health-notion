@@ -129,15 +129,16 @@ class VitalImageExperimentActivity : ComponentActivity() {
 
     private fun finishExperiment(applyCandidates: Boolean) {
         val state = model.state.value
+        val values = if (applyCandidates) state.candidateValues() else null
         val data = Intent().apply {
             putExtra(EXTRA_STARTED_AT, state.startedAt)
             putExtra(EXTRA_PROCESSING_MILLIS, state.processingMillis ?: -1L)
             putExtra(EXTRA_ATTEMPTS, state.attempts)
-            if (applyCandidates) {
-                putStringArrayListExtra(EXTRA_VALUES, (state.reading ?: NanoVitalReading(null, null, null)).inputValues())
+            if (values != null) {
+                putStringArrayListExtra(EXTRA_VALUES, values)
             }
         }
-        setResult(if (applyCandidates) Activity.RESULT_OK else Activity.RESULT_CANCELED, data)
+        setResult(if (values != null) Activity.RESULT_OK else Activity.RESULT_CANCELED, data)
         finish()
     }
 
@@ -168,7 +169,7 @@ class VitalImageExperimentActivity : ComponentActivity() {
                 "脈拍: ${state.reading?.pulse ?: "不明"} bpm\n" +
                 "処理時間: ${elapsedSeconds(elapsed)}（状態確認・画像展開・推論、試行${state.attempts}回目）"
         }.orEmpty()
-        applyButton.isEnabled = !state.busy && state.processingMillis != null
+        applyButton.isEnabled = state.candidateValues() != null
         detailsButton.visibility = if (state.responseDetails.isEmpty()) View.GONE else View.VISIBLE
         detailsButton.text = if (detailsExpanded) "読取の検証詳細を閉じる" else "読取の検証詳細を表示"
         detailsText.text = state.responseDetails

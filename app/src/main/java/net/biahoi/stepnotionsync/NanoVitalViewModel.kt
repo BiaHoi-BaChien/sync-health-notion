@@ -35,7 +35,12 @@ internal data class NanoVitalState(
     val startedAt: Long = 0,
     val attempts: Int = 0,
     val responseDetails: String = "",
-)
+) {
+    fun candidateValues(): ArrayList<String>? {
+        if (busy || processingMillis == null) return null
+        return reading?.inputValues()?.takeIf { values -> values.any { it.isNotEmpty() } }
+    }
+}
 
 internal class NanoVitalViewModel(application: Application) : AndroidViewModel(application) {
     private val modelDelegate = lazy { Generation.getClient() }
