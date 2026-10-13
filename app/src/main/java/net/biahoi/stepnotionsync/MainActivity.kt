@@ -19,7 +19,7 @@ import android.media.ToneGenerator
 import android.net.Uri
 import android.os.Bundle
 import android.os.Build
-import android.os.SystemClock
+import android.provider.Settings
 import android.speech.RecognizerIntent
 import android.text.InputType
 import android.util.Log
@@ -39,6 +39,7 @@ import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.Spinner
+import android.widget.Switch
 import android.widget.TextView
 import android.widget.ArrayAdapter
 import androidx.activity.ComponentActivity
@@ -120,6 +121,7 @@ class MainActivity : ComponentActivity() {
     private var requestedHealthPermissions: Set<String> = requiredPermissions
     private lateinit var permissionLauncher: ActivityResultLauncher<Set<String>>
     private lateinit var voicePermissionLauncher: ActivityResultLauncher<String>
+    private lateinit var notificationPermissionLauncher: ActivityResultLauncher<String>
     private lateinit var voiceInputLauncher: ActivityResultLauncher<Intent>
     private lateinit var vitalImageLauncher: ActivityResultLauncher<Intent>
     private val nanoModel: NanoVitalViewModel by viewModels()
@@ -127,8 +129,8 @@ class MainActivity : ComponentActivity() {
     private var showingSettings = false
     private lateinit var settingsBackCallback: OnBackPressedCallback
     private var pendingVitalDraft: VitalEntryDraft? = null
-    private var vitalEntryTiming = VitalEntryTiming(0)
-    private var vitalEntryTimingText: TextView? = null
+    private var activeVitalDraft: VitalEntryDraft? = null
+    private var vitalEntryFeedbackText: TextView? = null
     private lateinit var statusText: TextView
     private lateinit var stepsPhoneDateText: TextView
     private lateinit var stepsNotionDateText: TextView
@@ -163,6 +165,10 @@ class MainActivity : ComponentActivity() {
     private lateinit var uiModeSpinner: Spinner
     private lateinit var dataEntrySoundSpinner: Spinner
     private lateinit var manualSyncSoundSpinner: Spinner
+    private lateinit var stepGoalInput: EditText
+    private lateinit var stepGoalNotificationSwitch: Switch
+    private var stepGoalStatusText: TextView? = null
+    private var stepGoalRefreshJob: Job? = null
     private val dataEntrySoundChoices = OperationSoundPreference.choicesFor(manualSync = false)
     private val manualSyncSoundChoices = OperationSoundPreference.choicesFor(manualSync = true)
     private var currentSyncJob: Job? = null
@@ -199,6 +205,12 @@ class MainActivity : ComponentActivity() {
             setStatusMessage(message, floating = true)
             refreshLatestDates()
         }
+        notificationPermissionLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) requestStepGoalPermissions() else {
+                refreshStepGoalNotifications()
+                setStatusMessage("歩数の達成通知にはAndroidの通知の許可が必要です。", floating = true)
+            }
+        }
         voicePermissionLauncher = registerForActivityResult(
             ActivityResultContracts.RequestPermission()
         ) { granted ->
@@ -226,39 +238,33 @@ class MainActivity : ComponentActivity() {
             val inputs = manualVitalVoiceInputs ?: return@registerForActivityResult
             val values = data.getStringArrayListExtra(VitalImageExperimentActivity.EXTRA_VALUES)
                 .takeIf { result.resultCode == Activity.RESULT_OK }
-            val draft = currentVitalDraft()?.withImageResult(
-                candidates = values,
-                imageStartedAt = data.getLongExtra(VitalImageExperimentActivity.EXTRA_STARTED_AT, 0),
-                processingMillis = data.getLongExtra(VitalImageExperimentActivity.EXTRA_PROCESSING_MILLIS, -1)
-                    .takeIf { it >= 0 },
-                attempts = data.getIntExtra(VitalImageExperimentActivity.EXTRA_ATTEMPTS, 0),
-            ) ?: return@registerForActivityResult
-            vitalEntryTiming = draft.timing
+            val draft = currentVitalDraft()?.withImageResult(values) ?: return@registerForActivityResult
             if (values != null) {
                 inputs.systolic.setText(values.getOrNull(0).orEmpty())
                 inputs.diastolic.setText(values.getOrNull(1).orEmpty())
                 inputs.heartRate.setText(values.getOrNull(2).orEmpty())
             }
-            updateVitalEntryTimingText()
             if (data.getBooleanExtra(VitalImageExperimentActivity.EXTRA_OPEN_SETTINGS, false)) {
                 pendingVitalDraft = draft
                 manualVitalEntryDialog?.dismiss()
                 showSettingsPage(focusImage = true)
+            } else if (values != null && data.getBooleanExtra(VitalImageExperimentActivity.EXTRA_REGISTER_IMMEDIATELY, false)) {
+                registerManualVitalInputs()
             }
         }
         migrateAutoSyncScheduleIfNeeded()
         applyUiMode()
         initializeOperationCompletedSoundPlayer()
         val restoredDraft = savedInstanceState?.getStringArrayList("manual_vital_draft")?.let {
-            VitalEntryDraft(it, VitalEntryTiming(
-                savedInstanceState.getLong("vital_entry_started", SystemClock.elapsedRealtime()),
-                VitalEntryMethod.entries.firstOrNull {
-                    it.name == savedInstanceState.getString("vital_entry_method")
-                } ?: VitalEntryMethod.MANUAL,
-                savedInstanceState.getLong("vital_entry_processing", -1).takeIf { time -> time >= 0 },
-                savedInstanceState.getInt("vital_entry_attempts"),
-                savedInstanceState.getBoolean("vital_entry_image_started"),
-            ))
+            VitalEntryDraft(
+                values = it,
+                measuredAt = if (savedInstanceState.containsKey("vital_registration_time")) {
+                    Instant.ofEpochMilli(savedInstanceState.getLong("vital_registration_time"))
+                } else null,
+                clientRecordVersion = savedInstanceState.getLong("vital_registration_version"),
+                writeAttempted = savedInstanceState.getBoolean("vital_registration_attempted"),
+                message = savedInstanceState.getString("vital_registration_message"),
+            )
         }
         // Permission callbacks also refresh these top-page views while settings is open.
         showTopPage()
@@ -266,21 +272,26 @@ class MainActivity : ComponentActivity() {
             pendingVitalDraft = restoredDraft
             showSettingsPage(focusImage = restoredDraft != null)
         } else {
-            restoredDraft?.let { showManualVitalEntryDialog(it.values, it.timing) }
+            restoredDraft?.let { showManualVitalEntryDialog(it) }
         }
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putBoolean("showing_settings", showingSettings)
         currentVitalDraft()?.let { draft ->
-            outState.putLong("vital_entry_started", draft.timing.startedAt)
-            outState.putString("vital_entry_method", draft.timing.method.name)
-            outState.putLong("vital_entry_processing", draft.timing.processingMillis ?: -1)
-            outState.putInt("vital_entry_attempts", draft.timing.attempts)
-            outState.putBoolean("vital_entry_image_started", draft.timing.imageSelectionStarted)
             outState.putStringArrayList("manual_vital_draft", ArrayList(draft.values))
+            draft.measuredAt?.let { outState.putLong("vital_registration_time", it.toEpochMilli()) }
+            outState.putLong("vital_registration_version", draft.clientRecordVersion)
+            outState.putBoolean("vital_registration_attempted", draft.writeAttempted)
+            outState.putString("vital_registration_message", draft.message)
         }
         super.onSaveInstanceState(outState)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        StepGoalNotifications.schedule(this)
+        refreshStepGoalNotifications()
     }
 
     override fun onDestroy() {
@@ -537,6 +548,51 @@ class MainActivity : ComponentActivity() {
             choices = manualSyncSoundChoices
         )
         root.addSectionTitle(
+            title = "歩数目標・達成通知",
+            helpText = """
+                今日の歩数が目標の25％・50％・75％・100％に達すると通知します。同じ日・同じ目標の到達段階は繰り返し通知しません。複数の段階を超えていた場合は最新の段階だけ通知します。
+
+                約15分ごととアプリ表示時にHealth Connectの歩数を確認します。省電力設定や歩数データの反映状況により通知が遅れる場合があります。日付はスマホの時刻設定に従います。目標を変更すると達成状況を判定し直します。
+            """.trimIndent(),
+        )
+        val stepGoalLabel = TextView(this).apply {
+            text = "1日の目標歩数（歩）"
+            textSize = 16f
+            setTextColor(palette.primaryText)
+        }
+        root.addView(stepGoalLabel)
+        stepGoalInput = root.addInput("目標歩数").apply {
+            id = View.generateViewId()
+            inputType = InputType.TYPE_CLASS_NUMBER
+        }
+        stepGoalLabel.labelFor = stepGoalInput.id
+        stepGoalNotificationSwitch = Switch(this).apply {
+            text = "歩数の達成通知"
+            textOn = "ON"
+            textOff = "OFF"
+            showText = true
+            textSize = 16f
+            setTextColor(palette.primaryText)
+            minHeight = (48 * density).toInt()
+        }
+        root.addView(stepGoalNotificationSwitch, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+        ))
+        stepGoalStatusText = TextView(this).apply {
+            textSize = 14f
+            setTextColor(palette.secondaryText)
+            accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+            root.addView(this)
+        }
+        root.addButton("歩数通知の権限を許可") { requestStepGoalPermissions() }
+        root.addButton("Androidの通知設定を開く") {
+            StepGoalNotifications.ensureChannel(this)
+            startActivity(Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS).apply {
+                putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+                putExtra(Settings.EXTRA_CHANNEL_ID, StepGoalNotifications.CHANNEL_ID)
+            })
+        }
+        root.addSectionTitle(
             title = "自動同期",
             helpText = """
                 毎日同期を実行する時刻を選択します。「自動同期しない」を選ぶと停止します。
@@ -623,11 +679,12 @@ class MainActivity : ComponentActivity() {
         updateSettingsTabButtons(tabButtons, 0)
 
         root.addButton("設定を保存") {
-            val uiModeChanged = saveSettings()
+            val uiModeChanged = saveSettings() ?: return@addButton
             if (uiModeChanged) {
                 showSettingsPage()
             }
             setStatusMessage("設定を保存しました。", floating = true)
+            if (StepGoalSettings.load(this).enabled) requestStepGoalPermissions()
         }
         root.addButton(if (pendingVitalDraft != null) "バイタル入力に戻る" else "トップへ戻る") {
             if (pendingVitalDraft != null) returnToVitalInput(startImage = false) else showTopPage()
@@ -645,6 +702,7 @@ class MainActivity : ComponentActivity() {
         val scroll = centeredScrollContent(root, padding)
         setContentView(scroll)
         loadSettings()
+        refreshStepGoalNotifications()
         nanoModel.checkStatus()
         modelSettingsJob = lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -1503,6 +1561,9 @@ class MainActivity : ComponentActivity() {
         weightDirectionSpinner.setSelection(SyncDirection.indexOf(prefs.getString(WEIGHT_DIRECTION_KEY, null)))
         val autoSyncTime = prefs.getString(AUTO_SYNC_TIME_KEY, AUTO_SYNC_OFF) ?: AUTO_SYNC_OFF
         autoSyncSpinner.setSelection(autoSyncChoices().indexOfFirst { it.value == autoSyncTime }.coerceAtLeast(0))
+        val stepGoalSettings = StepGoalSettings.load(this)
+        stepGoalInput.setText(stepGoalSettings.goal.toString())
+        stepGoalNotificationSwitch.isChecked = stepGoalSettings.enabled
         uiModeSpinner.setSelection(UiModePreference.indexOf(prefs.getString(UI_MODE_KEY, null)))
         val legacyOperationSound = prefs.getString(LEGACY_OPERATION_COMPLETED_SOUND_KEY, null)
         dataEntrySoundSpinner.setSelection(
@@ -1519,7 +1580,13 @@ class MainActivity : ComponentActivity() {
         )
     }
 
-    private fun saveSettings(): Boolean {
+    private fun saveSettings(): Boolean? {
+        val stepGoal = parseStepGoal(stepGoalInput.text.toString())
+        if (stepGoal == null) {
+            stepGoalInput.error = "目標歩数は1以上の整数で入力してください。"
+            stepGoalInput.requestFocus()
+            return null
+        }
         val prefs = getSharedPreferences("notion", Context.MODE_PRIVATE)
         val previousUiMode = loadUiMode()
         val selectedUiMode = UiModePreference.entries[uiModeSpinner.selectedItemPosition].value
@@ -1540,6 +1607,8 @@ class MainActivity : ComponentActivity() {
             .putString(VITALS_DIRECTION_KEY, SyncDirection.entries[vitalsDirectionSpinner.selectedItemPosition].value)
             .putString(WEIGHT_DIRECTION_KEY, SyncDirection.entries[weightDirectionSpinner.selectedItemPosition].value)
             .putString(AUTO_SYNC_TIME_KEY, autoSyncChoices()[autoSyncSpinner.selectedItemPosition].value)
+            .putInt(STEP_GOAL_KEY, stepGoal)
+            .putBoolean(STEP_GOAL_NOTIFICATION_KEY, stepGoalNotificationSwitch.isChecked)
             .putString(UI_MODE_KEY, selectedUiMode)
             .putString(
                 DATA_ENTRY_COMPLETED_SOUND_KEY,
@@ -1552,7 +1621,68 @@ class MainActivity : ComponentActivity() {
             .apply()
         applyUiMode()
         scheduleAutoSync(this, loadAutoSyncTime())
+        StepGoalNotifications.schedule(this)
+        refreshStepGoalNotifications()
         return previousUiMode != selectedUiMode
+    }
+
+    private fun refreshStepGoalNotifications() {
+        stepGoalRefreshJob?.cancel()
+        stepGoalRefreshJob = lifecycleScope.launch {
+            val message = try {
+                StepGoalNotifications.check(applicationContext, inBackground = false)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: SecurityException) {
+                "Health Connectの歩数の読み取りを許可してください。"
+            } catch (_: Exception) {
+                "歩数を取得できませんでした。次回の確認時に再試行します。"
+            }
+            if (showingSettings) stepGoalStatusText?.text = message
+        }
+    }
+
+    private fun requestStepGoalPermissions() {
+        if (!StepGoalSettings.load(this).enabled) {
+            setStatusMessage("歩数の達成通知をONにして設定を保存してください。", floating = true)
+            return
+        }
+        if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(
+                this, Manifest.permission.POST_NOTIFICATIONS
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            return
+        }
+        if (!StepGoalNotifications.canNotify(this)) {
+            setStatusMessage("「Androidの通知設定を開く」から歩数目標の達成通知を許可してください。", floating = true)
+            return
+        }
+        lifecycleScope.launch {
+            try {
+                val client = healthConnectClientOrNull()
+                if (client == null) {
+                    setStatusMessage("Health Connectが利用できません。", floating = true)
+                    return@launch
+                }
+                val permissions = buildSet {
+                    add(HealthPermission.getReadPermission(StepsRecord::class))
+                    if (StepGoalNotifications.supportsBackgroundRead(client)) {
+                        add(HealthPermission.PERMISSION_READ_HEALTH_DATA_IN_BACKGROUND)
+                    }
+                }
+                if (!client.permissionController.getGrantedPermissions().containsAll(permissions)) {
+                    requestedHealthPermissions = permissions
+                    permissionLauncher.launch(permissions)
+                } else {
+                    refreshStepGoalNotifications()
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                setStatusMessage("歩数通知の権限を確認できませんでした。再度お試しください。", floating = true)
+            }
+        }
     }
 
     private fun currentConfig(): SyncConfig {
@@ -1610,6 +1740,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun refreshLatestDates(showProgress: Boolean = false) {
+        refreshStepGoalNotifications()
         if (latestDateRefreshJob?.isActive == true) {
             return
         }
@@ -2077,37 +2208,39 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showManualVitalEntryDialog(
-        initialValues: List<String> = emptyList(),
-        timing: VitalEntryTiming = VitalEntryTiming(SystemClock.elapsedRealtime()),
+        draft: VitalEntryDraft = VitalEntryDraft(emptyList()),
     ) {
         if (currentSyncJob?.isActive == true) {
             setStatusMessage("同期中はバイタルを登録できません。", floating = true)
             return
         }
 
-        vitalEntryTiming = timing
+        activeVitalDraft = draft
         lateinit var systolicInput: EditText
         lateinit var diastolicInput: EditText
         lateinit var heartRateInput: EditText
         manualVitalEntryDialog = showManualEntryDialog(
             title = "バイタルをHealth Connectに登録",
-            description = "測定日時は登録時点の時刻で保存します。",
+            description = draft.measuredAt?.let { "測定日時: ${displayDateTime(it)}（再試行でも保持します）" }
+                ?: "測定日時は登録時点の時刻で保存します。",
             voiceDescription = "音声でバイタルを入力",
             onImageInput = ::startVitalImageInput,
             content = { micButton ->
-                vitalEntryTimingText = TextView(this@MainActivity).also {
-                    it.textSize = 13f
-                    it.setTextColor(Color.parseColor("#AAB7C4"))
+                vitalEntryFeedbackText = TextView(this@MainActivity).also {
+                    it.text = draft.feedback()
+                    it.textSize = 15f
+                    it.setTextColor(Color.parseColor("#FFCC80"))
+                    it.accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+                    it.visibility = if (draft.feedback().isNullOrEmpty()) View.GONE else View.VISIBLE
                     addView(it)
                 }
-                updateVitalEntryTimingText()
                 systolicInput = addNumberInput("最高血圧")
                 diastolicInput = addNumberInput("最低血圧")
                 heartRateInput = addNumberInput("脈拍")
                 manualVitalVoiceInputs = ManualVitalVoiceInputs(systolicInput, diastolicInput, heartRateInput)
-                systolicInput.setText(initialValues.getOrNull(0).orEmpty())
-                diastolicInput.setText(initialValues.getOrNull(1).orEmpty())
-                heartRateInput.setText(initialValues.getOrNull(2).orEmpty())
+                systolicInput.setText(draft.values.getOrNull(0).orEmpty())
+                diastolicInput.setText(draft.values.getOrNull(1).orEmpty())
+                heartRateInput.setText(draft.values.getOrNull(2).orEmpty())
                 micButton.setOnClickListener {
                     startManualVitalVoiceInput(
                         ManualVitalVoiceInputs(
@@ -2118,26 +2251,13 @@ class MainActivity : ComponentActivity() {
                     )
                 }
             },
-            onRegister = { dialog ->
-                val measurement = runCatching {
-                    VitalMeasurement(
-                        measuredAt = Instant.now(),
-                        systolic = systolicInput.requiredPositiveDouble("最高血圧"),
-                        diastolic = diastolicInput.requiredPositiveDouble("最低血圧"),
-                        heartRate = heartRateInput.requiredPositiveLong("脈拍")
-                    )
-                }.getOrElse { error ->
-                    setStatusMessage(error.message ?: "入力値を確認してください。", floating = true)
-                    return@showManualEntryDialog
-                }
-                dialog.dismiss()
-                confirmAndRegisterManualVitalToHealthConnect(measurement, vitalEntryTiming)
-            },
+            onRegister = { registerManualVitalInputs() },
             onDismiss = {
-                manualVitalEntryDialog = null
-                vitalEntryTimingText = null
                 if (manualVitalVoiceInputs?.systolic === systolicInput) {
+                    manualVitalEntryDialog = null
                     manualVitalVoiceInputs = null
+                    activeVitalDraft = null
+                    vitalEntryFeedbackText = null
                     if (manualVoiceTarget == ManualVoiceTarget.VITALS) {
                         manualVoiceTarget = null
                     }
@@ -2147,46 +2267,26 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun currentVitalDraft(): VitalEntryDraft? = manualVitalVoiceInputs?.let {
-        VitalEntryDraft(listOf(it.systolic.text.toString(), it.diastolic.text.toString(), it.heartRate.text.toString()), vitalEntryTiming)
+        activeVitalDraft?.copy(values = listOf(it.systolic.text.toString(), it.diastolic.text.toString(), it.heartRate.text.toString()))
     } ?: pendingVitalDraft
 
     private fun returnToVitalInput(startImage: Boolean) {
         val draft = pendingVitalDraft ?: return
         pendingVitalDraft = null
         showTopPage()
-        showManualVitalEntryDialog(draft.values, draft.timing)
+        showManualVitalEntryDialog(draft)
         if (startImage) startVitalImageInput()
     }
 
     private fun startVitalImageInput() {
         if (manualVitalVoiceInputs == null) return
-        // A cancelled image attempt must not be labelled as a pure manual trial.
-        vitalEntryTiming = vitalEntryTiming.openImage()
-        updateVitalEntryTimingText()
-        vitalImageLauncher.launch(Intent(this, VitalImageExperimentActivity::class.java).apply {
-            if (vitalEntryTiming.imageSelectionStarted) {
-                putExtra(VitalImageExperimentActivity.EXTRA_STARTED_AT, vitalEntryTiming.startedAt)
-                putExtra(VitalImageExperimentActivity.EXTRA_ATTEMPTS, vitalEntryTiming.attempts)
-            }
-        })
+        vitalImageLauncher.launch(Intent(this, VitalImageExperimentActivity::class.java))
     }
 
     private fun startManualVitalVoiceInput(inputs: ManualVitalVoiceInputs) {
-        vitalEntryTiming = vitalEntryTiming.useVoice()
-        updateVitalEntryTimingText()
         manualVitalVoiceInputs = inputs
         manualVoiceTarget = ManualVoiceTarget.VITALS
         startManualVoiceInput()
-    }
-
-    private fun updateVitalEntryTimingText() {
-        val timing = vitalEntryTiming
-        vitalEntryTimingText?.text = buildString {
-            append(timing.method.label)
-            if (timing.imageSelectionStarted) append(" / 試行${timing.attempts}回")
-            timing.processingMillis?.let { append(" / 最終処理: ${elapsedSeconds(it)}") }
-            append("\n値を確認・修正してから登録してください。総時間は登録完了時に表示します。")
-        }
     }
 
     private fun startManualWeightVoiceInput(input: EditText) {
@@ -2402,7 +2502,37 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun confirmAndRegisterManualVitalToHealthConnect(measurement: VitalMeasurement, timing: VitalEntryTiming) {
+    private fun registerManualVitalInputs() {
+        if (currentSyncJob?.isActive == true) {
+            setStatusMessage("同期中はバイタルを登録できません。", floating = true)
+            return
+        }
+        val inputs = manualVitalVoiceInputs ?: return
+        val draft = currentVitalDraft() ?: return
+        val attempt = draft.prepareRegistration(Instant.now())
+        val measurement = runCatching {
+            VitalMeasurement(
+                measuredAt = checkNotNull(attempt.measuredAt),
+                systolic = inputs.systolic.requiredPositiveDouble("最高血圧"),
+                diastolic = inputs.diastolic.requiredPositiveDouble("最低血圧"),
+                heartRate = inputs.heartRate.requiredPositiveLong("脈拍"),
+            )
+        }.getOrElse { error ->
+            val message = error.message ?: "入力値を確認してください。"
+            activeVitalDraft = draft.withRegistrationFailure(message)
+            vitalEntryFeedbackText?.apply {
+                text = activeVitalDraft?.feedback()
+                visibility = View.VISIBLE
+            }
+            return
+        }
+        activeVitalDraft = attempt
+        pendingVitalDraft = attempt
+        manualVitalEntryDialog?.dismiss()
+        confirmAndRegisterManualVitalToHealthConnect(measurement, attempt.clientRecordVersion)
+    }
+
+    private fun confirmAndRegisterManualVitalToHealthConnect(measurement: VitalMeasurement, clientRecordVersion: Long) {
         if (currentSyncJob?.isActive == true) {
             return
         }
@@ -2412,7 +2542,10 @@ class MainActivity : ComponentActivity() {
         showSyncDialog(message)
         currentSyncJob = CoroutineScope(Dispatchers.Main).launch {
             try {
-                val client = checkedHealthClient(MANUAL_VITAL_REQUIRED_PERMISSIONS) ?: return@launch
+                val client = checkedHealthClient(MANUAL_VITAL_REQUIRED_PERMISSIONS) ?: run {
+                    pendingVitalDraft = pendingVitalDraft?.withRegistrationFailure(statusText.text.toString())
+                    return@launch
+                }
                 val recentMeasurements = withContext(Dispatchers.IO) {
                     HealthNotionSyncEngine.readVitalMeasurements(client, DEFAULT_LOOKBACK_DAYS)
                 }
@@ -2426,16 +2559,27 @@ class MainActivity : ComponentActivity() {
                         continueText = "このまま登録"
                     )
                     if (!shouldContinue) {
-                        setStatusMessage("バイタルの登録を中止しました。", floating = true)
+                        pendingVitalDraft = pendingVitalDraft?.withRegistrationFailure("入力値を修正してから登録してください。")
                         return@launch
                     }
                 }
-                insertManualVitalToHealthConnect(client, measurement, timing)
+                insertManualVitalToHealthConnect(client, measurement, clientRecordVersion)
+            } catch (e: CancellationException) {
+                pendingVitalDraft = pendingVitalDraft?.withRegistrationFailure("登録処理を中止しました。")
+                throw e
             } catch (e: Exception) {
-                setStatusMessage("バイタルの登録に失敗しました: ${safeErrorMessage(e)}", floating = true)
+                pendingVitalDraft = pendingVitalDraft?.withRegistrationFailure("登録処理に失敗しました: ${safeErrorMessage(e)}")
             } finally {
                 currentSyncJob = null
                 dismissSyncDialog()
+                if (!isFinishing && !isDestroyed && !isChangingConfigurations) {
+                    pendingVitalDraft?.let { draft ->
+                        pendingVitalDraft = null
+                        messageDialog?.dismiss()
+                        setStatusMessage(draft.feedback() ?: "バイタルの登録を完了できませんでした。")
+                        showManualVitalEntryDialog(draft)
+                    }
+                }
             }
         }
     }
@@ -2443,16 +2587,18 @@ class MainActivity : ComponentActivity() {
     private suspend fun insertManualVitalToHealthConnect(
         client: HealthConnectClient,
         measurement: VitalMeasurement,
-        timing: VitalEntryTiming,
+        clientRecordVersion: Long,
     ) {
         val message = "バイタルをHealth Connectに登録中..."
         setStatusMessage(message)
         showSyncDialog(message)
+        pendingVitalDraft = pendingVitalDraft?.copy(writeAttempted = true)
         withContext(Dispatchers.IO) {
-            client.insertRecords(measurement.toHealthConnectRecords())
+            client.insertRecords(measurement.toHealthConnectRecords(clientRecordVersion = clientRecordVersion))
         }
+        pendingVitalDraft = null
         playOperationCompletedSound(loadOperationSoundPreference(DATA_ENTRY_COMPLETED_SOUND_KEY))
-        setStatusMessage("バイタルをHealth Connectに登録しました。\n${timing.summary(SystemClock.elapsedRealtime())}", floating = true)
+        setStatusMessage("バイタルをHealth Connectに登録しました。", floating = true)
         refreshLatestDates()
     }
 
@@ -4715,10 +4861,11 @@ private fun formatComparisonNumber(value: Double): String =
         String.format(Locale.JAPAN, "%.1f", value)
     }
 
-private fun VitalMeasurement.toHealthConnectRecords(
+internal fun VitalMeasurement.toHealthConnectRecords(
     includeHeartRateWhenMissing: Boolean = true,
     bloodPressureMetadataId: String? = null,
-    heartRateMetadataId: String? = null
+    heartRateMetadataId: String? = null,
+    clientRecordVersion: Long = 0,
 ): List<androidx.health.connect.client.records.Record> {
     val zoneOffset = measuredAt.atZone(ZoneId.systemDefault()).offset
     val records = mutableListOf<androidx.health.connect.client.records.Record>(
@@ -4727,7 +4874,7 @@ private fun VitalMeasurement.toHealthConnectRecords(
             zoneOffset = zoneOffset,
             metadata = bloodPressureMetadataId
                 ?.let(Metadata::manualEntryWithId)
-                ?: Metadata.manualEntry("manual-bp-${measuredAt.toEpochMilli()}"),
+                ?: Metadata.manualEntry("manual-bp-${measuredAt.toEpochMilli()}", clientRecordVersion),
             systolic = Pressure.millimetersOfMercury(systolic),
             diastolic = Pressure.millimetersOfMercury(diastolic)
         )
@@ -4741,7 +4888,7 @@ private fun VitalMeasurement.toHealthConnectRecords(
             samples = listOf(HeartRateRecord.Sample(measuredAt, checkNotNull(heartRate))),
             metadata = heartRateMetadataId
                 ?.let(Metadata::manualEntryWithId)
-                ?: Metadata.manualEntry("manual-hr-${measuredAt.toEpochMilli()}")
+                ?: Metadata.manualEntry("manual-hr-${measuredAt.toEpochMilli()}", clientRecordVersion)
         ))
     }
     return records

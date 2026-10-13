@@ -5,7 +5,6 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.ImageDecoder
 import android.net.Uri
-import android.os.SystemClock
 import androidx.lifecycle.AndroidViewModel
 import androidx.core.content.FileProvider
 import androidx.lifecycle.viewModelScope
@@ -36,9 +35,7 @@ internal data class NanoVitalState(
     val modelName: String = "未確認",
     val bitmap: Bitmap? = null,
     val reading: NanoVitalReading? = null,
-    val processingMillis: Long? = null,
-    val startedAt: Long = 0,
-    val attempts: Int = 0,
+    val readCompleted: Boolean = false,
     val responseDetails: String = "",
 ) {
     fun imageDestination(): NanoImageDestination = when {
@@ -56,9 +53,12 @@ internal data class NanoVitalState(
     }
 
     fun candidateValues(): ArrayList<String>? {
-        if (busy || processingMillis == null) return null
+        if (busy || !readCompleted) return null
         return reading?.inputValues()?.takeIf { values -> values.any { it.isNotEmpty() } }
     }
+
+    fun registrationValues(): ArrayList<String>? =
+        candidateValues()?.takeIf { values -> values.all { it.isNotEmpty() } }
 }
 
 internal class NanoVitalViewModel(application: Application) : AndroidViewModel(application) {
@@ -119,18 +119,6 @@ internal class NanoVitalViewModel(application: Application) : AndroidViewModel(a
         updateStatus()
     }
 
-    fun beginSelection() {
-        if (state.value.startedAt == 0L) {
-            mutableState.value = state.value.copy(startedAt = SystemClock.elapsedRealtime())
-        }
-    }
-
-    fun continueTrial(startedAt: Long, attempts: Int) {
-        if (state.value.startedAt == 0L && startedAt > 0) {
-            mutableState.value = state.value.copy(startedAt = startedAt, attempts = attempts)
-        }
-    }
-
     fun reportInputError(source: VitalImageSource) {
         imageInput.complete(source)
         if (source == VitalImageSource.CAMERA) discardCapture()
@@ -177,13 +165,12 @@ internal class NanoVitalViewModel(application: Application) : AndroidViewModel(a
     }
 
     fun readImage(uri: Uri, temporaryCapture: Boolean = false) = runOperation {
-        // A picker result delivered after process death belongs to an expired trial.
-        check(state.value.startedAt > 0)
+        // A picker result delivered after process death belongs to an expired session.
+        check(!imageInput.interrupted)
         mutableState.value = state.value.copy(
-            bitmap = null, reading = null, processingMillis = null, responseDetails = "",
-            message = "端末内で画像を読み取り中…", attempts = state.value.attempts + 1,
+            bitmap = null, reading = null, readCompleted = false, responseDetails = "",
+            message = "端末内で画像を読み取り中…",
         )
-        val started = SystemClock.elapsedRealtime()
         try {
             withTimeout(120_000) {
                 mutableState.value = state.value.copy(status = null)
@@ -235,13 +222,13 @@ internal class NanoVitalViewModel(application: Application) : AndroidViewModel(a
                         candidate.finishReason != Candidate.FinishReason.STOP -> "モデルが正常に応答を完了しなかったため、候補を採用していません。"
                         reading == null -> "モデルは応答しましたが、指定の形式に合わないため候補を採用していません。"
                         reading.inputValues().all { it.isEmpty() } -> "モデルは3項目とも読み取り不明としました。手入力するか、別の画像で試してください。"
-                        else -> "未確認の候補です。誤読の可能性があります。不明な項目は空欄のまま確認・修正してください。"
+                        else -> "誤読の可能性があります。画像と値を照合してから登録してください。不明な項目は入力画面で修正できます。"
                     },
                 )
             }
         } finally {
             if (temporaryCapture) discardCapture()
-            mutableState.value = state.value.copy(processingMillis = SystemClock.elapsedRealtime() - started)
+            mutableState.value = state.value.copy(readCompleted = true)
         }
     }
 
