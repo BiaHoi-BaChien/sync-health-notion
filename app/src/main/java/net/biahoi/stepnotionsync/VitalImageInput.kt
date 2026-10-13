@@ -1,6 +1,8 @@
 package net.biahoi.stepnotionsync
 
 import java.io.File
+import java.time.Instant
+import java.time.temporal.ChronoUnit
 
 internal enum class VitalImageSource { PICKER, CAMERA }
 
@@ -34,16 +36,33 @@ internal class VitalImageInputSession {
     }
 }
 
-internal data class VitalEntryDraft(val values: List<String>, val timing: VitalEntryTiming) {
-    fun withImageResult(
-        candidates: List<String>?,
-        imageStartedAt: Long,
-        processingMillis: Long?,
-        attempts: Int,
-    ): VitalEntryDraft = copy(
-        values = candidates ?: values,
-        timing = timing.recordImageResult(imageStartedAt, processingMillis, attempts, candidates != null),
+internal data class VitalEntryDraft(
+    val values: List<String>,
+    val measuredAt: Instant? = null,
+    val clientRecordVersion: Long = 0,
+    val writeAttempted: Boolean = false,
+    val message: String? = null,
+) {
+    fun withImageResult(candidates: List<String>?): VitalEntryDraft =
+        copy(values = candidates ?: values)
+
+    // Keep the record IDs stable even when a completed write loses its response to cancellation.
+    fun prepareRegistration(now: Instant): VitalEntryDraft = copy(
+        measuredAt = measuredAt ?: now.truncatedTo(ChronoUnit.MILLIS),
+        clientRecordVersion = if (measuredAt == null) 0 else Math.addExact(clientRecordVersion, 1),
+        message = null,
     )
+
+    fun withRegistrationFailure(reason: String): VitalEntryDraft = copy(
+        message = if (writeAttempted) "$reason\n$UNCONFIRMED_REGISTRATION_MESSAGE" else reason,
+    )
+
+    fun feedback(): String? = message ?: if (writeAttempted) UNCONFIRMED_REGISTRATION_MESSAGE else null
+
+    companion object {
+        private const val UNCONFIRMED_REGISTRATION_MESSAGE =
+            "保存済みの可能性があります。再試行して登録結果を確認してください。値を修正すると同じ測定を更新します。"
+    }
 }
 
 internal class VitalCaptureFiles(cacheDir: File) {

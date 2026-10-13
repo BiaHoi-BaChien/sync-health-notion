@@ -34,6 +34,7 @@ class VitalImageExperimentActivity : ComponentActivity() {
     private lateinit var preview: ImageView
     private lateinit var progress: ProgressBar
     private lateinit var pickButton: Button
+    private lateinit var registerButton: Button
     private lateinit var applyButton: Button
     private lateinit var detailsButton: Button
     private lateinit var detailsText: TextView
@@ -64,10 +65,6 @@ class VitalImageExperimentActivity : ComponentActivity() {
         VitalCaptureFiles.cleanOnProcessStart(cacheDir)
         // Keep the private image and candidates out of screenshots and recent-app previews.
         window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
-        model.continueTrial(
-            savedInstanceState?.getLong(EXTRA_STARTED_AT) ?: intent.getLongExtra(EXTRA_STARTED_AT, 0),
-            savedInstanceState?.getInt(EXTRA_ATTEMPTS) ?: intent.getIntExtra(EXTRA_ATTEMPTS, 0),
-        )
         model.imageInput.open(restoredActivity = savedInstanceState != null)
         detailsExpanded = savedInstanceState?.getBoolean("details_expanded") ?: false
         onBackPressedDispatcher.addCallback(this) { finishExperiment(applyCandidates = false) }
@@ -90,7 +87,7 @@ class VitalImageExperimentActivity : ComponentActivity() {
             content.addView(this, LinearLayout.LayoutParams(-1, -2))
             setOnClickListener { action() }
         }
-        text("画像から入力（検証）", 22f).typeface = Typeface.DEFAULT_BOLD
+        text("画像から入力", 22f).typeface = Typeface.DEFAULT_BOLD
         text("選択・撮影した血圧計の画像を端末内のGemini Nanoで読み取ります。画像はクラウドに送信しません。")
         statusText = text("")
         progress = ProgressBar(this).also { content.addView(it) }
@@ -111,8 +108,11 @@ class VitalImageExperimentActivity : ComponentActivity() {
             render(model.state.value)
         }
         detailsText = text("")
-        text("候補は本人が確認・修正してください。この画面では登録しません。測定日時は既存の入力と同じく登録時刻です。")
-        applyButton = button("候補を確認・修正する") {
+        text("画像と読み取り値を確認してください。3項目が正しければそのままHealth Connectに登録できます。不明な項目や修正がある場合は入力画面へ進んでください。測定日時は登録時刻です。")
+        registerButton = button("この値で登録") {
+            finishExperiment(applyCandidates = true, registerImmediately = true)
+        }
+        applyButton = button("入力画面で修正する") {
             finishExperiment(applyCandidates = true)
         }
         button("戻る") { finishExperiment(applyCandidates = false) }
@@ -134,8 +134,6 @@ class VitalImageExperimentActivity : ComponentActivity() {
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
-        outState.putLong(EXTRA_STARTED_AT, model.state.value.startedAt)
-        outState.putInt(EXTRA_ATTEMPTS, model.state.value.attempts)
         outState.putBoolean("details_expanded", detailsExpanded)
         super.onSaveInstanceState(outState)
     }
@@ -163,7 +161,6 @@ class VitalImageExperimentActivity : ComponentActivity() {
 
     private fun launchImageSource(source: VitalImageSource) {
         model.imageInput.begin(source)
-        model.beginSelection()
         try {
             when (source) {
                 VitalImageSource.PICKER -> picker.launch(Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
@@ -187,14 +184,21 @@ class VitalImageExperimentActivity : ComponentActivity() {
         }
     }
 
-    private fun finishExperiment(applyCandidates: Boolean, openSettings: Boolean = false) {
+    private fun finishExperiment(
+        applyCandidates: Boolean,
+        openSettings: Boolean = false,
+        registerImmediately: Boolean = false,
+    ) {
         if (isFinishing) return
         val state = model.state.value
-        val values = if (applyCandidates) state.candidateValues() else null
+        val values = when {
+            registerImmediately -> state.registrationValues()
+            applyCandidates -> state.candidateValues()
+            else -> null
+        }
+        if (applyCandidates && (values == null || model.imageInput.pendingSource != null)) return
         val data = Intent().apply {
-            putExtra(EXTRA_STARTED_AT, state.startedAt)
-            putExtra(EXTRA_PROCESSING_MILLIS, state.processingMillis ?: -1L)
-            putExtra(EXTRA_ATTEMPTS, state.attempts)
+            putExtra(EXTRA_REGISTER_IMMEDIATELY, registerImmediately)
             putExtra(EXTRA_OPEN_SETTINGS, openSettings)
             if (values != null) {
                 putStringArrayListExtra(EXTRA_VALUES, values)
@@ -223,13 +227,13 @@ class VitalImageExperimentActivity : ComponentActivity() {
         if (pickButton.isEnabled && model.imageInput.chooseSource) showSourceDialog()
         preview.setImageBitmap(state.bitmap)
         preview.visibility = if (state.bitmap == null) View.GONE else View.VISIBLE
-        resultText.text = state.processingMillis?.let { elapsed ->
+        resultText.text = if (state.readCompleted) {
             "最高血圧: ${state.reading?.systolic ?: "不明"} mmHg\n" +
                 "最低血圧: ${state.reading?.diastolic ?: "不明"} mmHg\n" +
-                "脈拍: ${state.reading?.pulse ?: "不明"} bpm\n" +
-                "処理時間: ${elapsedSeconds(elapsed)}（状態確認・画像展開・推論、試行${state.attempts}回目）"
-        }.orEmpty()
-        applyButton.isEnabled = state.candidateValues() != null
+                "脈拍: ${state.reading?.pulse ?: "不明"} bpm"
+        } else ""
+        registerButton.isEnabled = state.registrationValues() != null && model.imageInput.pendingSource == null
+        applyButton.isEnabled = state.candidateValues() != null && model.imageInput.pendingSource == null
         detailsButton.visibility = if (state.responseDetails.isEmpty()) View.GONE else View.VISIBLE
         detailsButton.text = if (detailsExpanded) "読取の検証詳細を閉じる" else "読取の検証詳細を表示"
         detailsText.text = state.responseDetails
@@ -240,9 +244,7 @@ class VitalImageExperimentActivity : ComponentActivity() {
 
     companion object {
         internal const val EXTRA_VALUES = "nano_vital_values"
-        internal const val EXTRA_STARTED_AT = "nano_vital_started_at"
-        internal const val EXTRA_PROCESSING_MILLIS = "nano_vital_processing_millis"
-        internal const val EXTRA_ATTEMPTS = "nano_vital_attempts"
+        internal const val EXTRA_REGISTER_IMMEDIATELY = "nano_vital_register_immediately"
         internal const val EXTRA_OPEN_SETTINGS = "nano_vital_open_settings"
     }
 }

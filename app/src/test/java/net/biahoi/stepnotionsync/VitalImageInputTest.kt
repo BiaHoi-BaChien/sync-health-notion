@@ -76,29 +76,23 @@ class VitalImageInputTest {
     }
 
     @Test
-    fun settingsRoundTripWithoutAReadKeepsDraftVoiceHistoryAndAttempts() {
-        val timing = VitalEntryTiming(1_000).useVoice().openImage().recordImageResult(2_000, 500, 1, true)
-        val draft = VitalEntryDraft(listOf("128", "76", "62"), timing)
-        assertEquals(draft, draft.withImageResult(null, timing.startedAt, null, 1))
+    fun settingsRoundTripWithoutAReadKeepsDraft() {
+        val draft = VitalEntryDraft(listOf("128", "76", "62"))
+        assertEquals(draft, draft.withImageResult(null))
     }
 
     @Test
-    fun cancelledReadUpdatesTimingWithoutReplacingUserEdits() {
-        val draft = VitalEntryDraft(listOf("130", "", "65"), VitalEntryTiming(1_000).useVoice().openImage())
-        val result = draft.withImageResult(null, 2_000, 600, 1)
+    fun cancelledReadDoesNotReplaceUserEdits() {
+        val draft = VitalEntryDraft(listOf("130", "", "65"))
+        val result = draft.withImageResult(null)
         assertEquals(draft.values, result.values)
-        assertEquals(VitalEntryMethod.IMAGE_AND_VOICE, result.timing.method)
-        assertEquals(1_000L, result.timing.startedAt)
-        assertEquals(1, result.timing.attempts)
     }
 
     @Test
     fun confirmedPartialReadingReturnsEditableCandidates() {
-        val draft = VitalEntryDraft(listOf("130", "80", "65"), VitalEntryTiming(1_000).openImage())
-        val result = draft.withImageResult(listOf("128", "", "62"), 2_000, 600, 1)
+        val draft = VitalEntryDraft(listOf("130", "80", "65"))
+        val result = draft.withImageResult(listOf("128", "", "62"))
         assertEquals(listOf("128", "", "62"), result.values)
-        assertEquals(VitalEntryMethod.IMAGE, result.timing.method)
-        assertEquals(1, result.timing.attempts)
     }
 
     @Test

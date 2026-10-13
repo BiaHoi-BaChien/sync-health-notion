@@ -1,7 +1,5 @@
 package net.biahoi.stepnotionsync
 
-import java.util.Locale
-
 internal data class NanoVitalReading(
     val systolic: Int?,
     val diastolic: Int?,
@@ -28,63 +26,6 @@ internal fun parseNanoVitalReading(response: String): NanoVitalReading? {
         NanoVitalReading(null, null, pulse.toIntOrNull())
     } else {
         NanoVitalReading(sys, dia, pulse.toIntOrNull())
-    }
-}
-
-internal fun elapsedSeconds(milliseconds: Long): String =
-    String.format(Locale.JAPAN, "%.1f秒", milliseconds.coerceAtLeast(0) / 1000.0)
-
-internal enum class VitalEntryMethod(val label: String) {
-    MANUAL("手入力"),
-    VOICE("音声入力"),
-    IMAGE_EXPERIMENT("画像検証を含む入力"),
-    IMAGE("画像入力"),
-    IMAGE_AND_VOICE("画像＋音声入力");
-
-    val includesVoice: Boolean get() = this == VOICE || this == IMAGE_AND_VOICE
-}
-
-internal data class VitalEntryTiming(
-    val startedAt: Long,
-    val method: VitalEntryMethod = VitalEntryMethod.MANUAL,
-    val processingMillis: Long? = null,
-    val attempts: Int = 0,
-    val imageSelectionStarted: Boolean = false,
-) {
-    fun openImage(): VitalEntryTiming = copy(method = when (method) {
-        VitalEntryMethod.MANUAL -> VitalEntryMethod.IMAGE_EXPERIMENT
-        VitalEntryMethod.VOICE -> VitalEntryMethod.IMAGE_AND_VOICE
-        else -> method
-    })
-
-    fun useVoice(): VitalEntryTiming = copy(method = when (method) {
-        VitalEntryMethod.MANUAL, VitalEntryMethod.VOICE -> VitalEntryMethod.VOICE
-        else -> VitalEntryMethod.IMAGE_AND_VOICE
-    })
-
-    // Record a returned trial even when its candidates were cancelled.
-    fun recordImageResult(
-        imageStartedAt: Long,
-        processingMillis: Long?,
-        attempts: Int,
-        candidatesApplied: Boolean,
-    ): VitalEntryTiming = copy(
-        // Voice used before the first image remains part of the total elapsed time.
-        startedAt = if (!imageSelectionStarted && !method.includesVoice && imageStartedAt > 0) imageStartedAt else startedAt,
-        method = when {
-            method.includesVoice -> VitalEntryMethod.IMAGE_AND_VOICE
-            candidatesApplied -> VitalEntryMethod.IMAGE
-            else -> openImage().method
-        },
-        processingMillis = if (attempts > this.attempts) processingMillis else this.processingMillis,
-        attempts = maxOf(this.attempts, attempts),
-        imageSelectionStarted = imageSelectionStarted || imageStartedAt > 0,
-    )
-
-    fun summary(completedAt: Long): String = buildString {
-        append("${method.label}: 登録完了まで${elapsedSeconds(completedAt - startedAt)}")
-        if (imageSelectionStarted) append(" / 試行${attempts}回")
-        processingMillis?.let { append(" / 最終処理${elapsedSeconds(it)}") }
     }
 }
 

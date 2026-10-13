@@ -14,7 +14,7 @@ class PermissionsRationaleActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setPadding(padding, padding, padding, padding)
             addView(TextView(context).apply {
-                text = "手入力した血圧、脈拍、体重はHealth Connectへ保存します。同期設定に応じて、歩数、血圧、脈拍、体重データをHealth ConnectとNotionの間で読み書きします。"
+                text = "手入力した血圧、脈拍、体重はHealth Connectへ保存します。同期設定に応じて、歩数、血圧、脈拍、体重データをHealth ConnectとNotionの間で読み書きします。歩数の達成通知がONの場合は、今日の歩数を読み取り、目標の25％・50％・75％・100％の達成を通知します。定期通知にはバックグラウンドでの読み取りを使用します。"
                 textSize = 18f
             })
         }
